@@ -9,4 +9,12 @@ wheels/
 # Virtual environments
 .venv
 
-docs/
+# Local datasets, model caches, and training outputs.
+/data/
+/artifacts/
+.pytest_cache/
+.coverage
+
+# Keep the supplied challenge document local while tracking the project guide.
+docs/*
+!docs/PROJECT.md

@@ -1,0 +1,99 @@
+project:
+  seed: 2026
+  run_name: clip_b16_multiview
+
+data:
+  repo_id: OwensLab/CommunityForensics-Small
+  revision: null
+  cache_dir: data/cache/huggingface
+  output_dir: data/processed/community_forensics_20k
+  manifest_path: data/processed/community_forensics_20k/manifest.jsonl
+  audit_path: data/processed/community_forensics_20k/audit.json
+  max_scanned: 150000
+  shuffle_buffer: 2048
+  max_download_gb: 22.0
+  max_image_pixels: 50000000
+  train_per_class: 8000
+  val_per_class: 2000
+  train_generator_percent: 85
+  architecture_ratios:
+    LatDiff: 0.60
+    GAN: 0.15
+    PixDiff: 0.10
+    other: 0.15
+  systematic_per_model_cap: 6
+  non_systematic_per_model_cap: 100
+  max_real_source_fraction: 0.60
+  exclude_nsfw: true
+  excluded_generator_tokens:
+    - dall-e
+    - dalle
+    - openai
+  excluded_real_source_tokens:
+    - coco
+  exact_deduplication: true
+  perceptual_deduplication: true
+  perceptual_hash_size: 8
+
+views:
+  input_size: 224
+  local_scale_min: 0.50
+  local_scale_max: 0.90
+  padding_color: 127
+  random_interpolation: true
+
+augmentations:
+  transformed_clean_probability: 0.25
+  single_operation_probability: 0.50
+  double_operation_probability: 0.25
+  jpeg_quality_min: 30
+  jpeg_quality_max: 95
+  blur_sigma_min: 0.1
+  blur_sigma_max: 2.0
+  resize_scale_min: 0.25
+  resize_scale_max: 1.0
+  gaussian_noise_sigma_min: 0.0
+  gaussian_noise_sigma_max: 0.10
+  color_jitter_strength: 0.20
+  center_crop_min_fraction: 0.70
+  center_crop_max_fraction: 1.0
+  double_jpeg_weight: 0.08
+  webp_weight: 0.05
+  enable_double_jpeg: true
+  enable_webp: true
+
+model:
+  backbone_name: ViT-B-16
+  pretrained: openai
+  embedding_dim: 512
+  head_dim: 256
+  projection_dim: 128
+  dropout: 0.20
+
+loss:
+  classification_weight: 1.0
+  consistency_weight: 0.5
+  contrastive_weight: 0.1
+  contrastive_temperature: 0.10
+
+training:
+  epochs: 12
+  batch_size: 4
+  gradient_accumulation_steps: 8
+  learning_rate: 0.0003
+  weight_decay: 0.0001
+  warmup_fraction: 0.10
+  num_workers: 4
+  amp: true
+  amp_dtype: fp16
+  device: auto
+  gradient_clip_norm: 1.0
+  early_stopping_patience: 3
+  threshold: 0.5
+  resume_from: null
+  pin_memory: true
+
+output:
+  root_dir: artifacts/runs
+  save_last: true
+  keep_best_only: false
