@@ -24,18 +24,25 @@ class ProjectConfig:
 @dataclass
 class DataConfig:
     repo_id: str = "OwensLab/CommunityForensics-Small"
-    revision: str | None = None
-    cache_dir: str = "data/cache/huggingface"
+    revision: str | None = "6c539a534c07917307c381f5af4053c6091b5278"
+    shard_cache_dir: str = "data/cache/community_forensics_shards"
+    shard_indices: list[int] = field(
+        default_factory=lambda: [68, 70, 77, 78, 83, 115, 116, 156, 157]
+    )
+    max_shard_cache_gb: float = 12.0
     output_dir: str = "data/processed/community_forensics_20k"
     manifest_path: str = "data/processed/community_forensics_20k/manifest.jsonl"
     audit_path: str = "data/processed/community_forensics_20k/audit.json"
+    hf_auth: str = "auto"
     max_scanned: int = 150_000
-    shuffle_buffer: int = 2_048
+    checkpoint_every_scanned: int = 1_000
+    network_max_retries: int = 5
+    network_retry_base_seconds: float = 5.0
     max_download_gb: float = 22.0
     max_image_pixels: int = 50_000_000
     train_per_class: int = 8_000
     val_per_class: int = 2_000
-    train_generator_percent: int = 85
+    train_generator_percent: int = 80
     architecture_ratios: dict[str, float] = field(
         default_factory=lambda: {
             "LatDiff": 0.60,
@@ -45,8 +52,8 @@ class DataConfig:
         }
     )
     systematic_per_model_cap: int = 6
-    non_systematic_per_model_cap: int = 100
-    max_real_source_fraction: float = 0.60
+    non_systematic_per_model_cap: int = 2_000
+    max_real_source_fraction: float = 0.70
     exclude_nsfw: bool = True
     excluded_generator_tokens: list[str] = field(
         default_factory=lambda: ["dall-e", "dalle", "openai"]
@@ -109,12 +116,14 @@ class LossConfig:
 @dataclass
 class TrainingConfig:
     epochs: int = 12
-    batch_size: int = 4
-    gradient_accumulation_steps: int = 8
+    batch_size: int = 16
+    gradient_accumulation_steps: int = 2
     learning_rate: float = 3e-4
     weight_decay: float = 1e-4
     warmup_fraction: float = 0.10
-    num_workers: int = 4
+    num_workers: int = 8
+    prefetch_factor: int = 2
+    persistent_workers: bool = False
     amp: bool = True
     amp_dtype: str = "fp16"
     device: str = "auto"
@@ -161,10 +170,22 @@ class AppConfig:
             raise ConfigError("data.train_generator_percent must be between 1 and 99.")
         if self.data.train_per_class <= 0 or self.data.val_per_class <= 0:
             raise ConfigError("Per-class sample targets must be positive.")
-        if self.data.max_scanned <= 0 or self.data.shuffle_buffer <= 0:
-            raise ConfigError("Streaming limits must be positive.")
+        if self.data.max_scanned <= 0 or self.data.checkpoint_every_scanned <= 0:
+            raise ConfigError("Scan and checkpoint limits must be positive.")
+        if self.data.network_max_retries < 0 or self.data.network_retry_base_seconds <= 0:
+            raise ConfigError("Network retry settings must be non-negative and positive.")
+        if self.data.hf_auth not in {"auto", "required", "disabled"}:
+            raise ConfigError("data.hf_auth must be auto, required, or disabled.")
         if self.data.max_download_gb <= 0:
             raise ConfigError("data.max_download_gb must be positive.")
+        if not self.data.shard_indices or any(index < 0 for index in self.data.shard_indices):
+            raise ConfigError("data.shard_indices must contain non-negative shard indices.")
+        if len(set(self.data.shard_indices)) != len(self.data.shard_indices):
+            raise ConfigError("data.shard_indices must not contain duplicates.")
+        if self.data.max_shard_cache_gb <= 0:
+            raise ConfigError("data.max_shard_cache_gb must be positive.")
+        if self.data.systematic_per_model_cap <= 0 or self.data.non_systematic_per_model_cap <= 0:
+            raise ConfigError("Generator sample caps must be positive.")
         ratios = self.data.architecture_ratios
         if set(ratios) != {"LatDiff", "GAN", "PixDiff", "other"}:
             raise ConfigError("Architecture ratios must define LatDiff, GAN, PixDiff, and other.")
@@ -187,6 +208,8 @@ class AppConfig:
             raise ConfigError("Probability and fraction fields must be in [0, 1].")
         if self.training.batch_size <= 0 or self.training.gradient_accumulation_steps <= 0:
             raise ConfigError("Batch size and gradient accumulation must be positive.")
+        if self.training.num_workers < 0 or self.training.prefetch_factor <= 0:
+            raise ConfigError("Worker count must be non-negative and prefetch factor positive.")
         if self.training.amp_dtype not in {"fp16", "bf16"}:
             raise ConfigError("training.amp_dtype must be fp16 or bf16.")
 

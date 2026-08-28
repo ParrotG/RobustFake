@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import signal
 import uuid
 from contextlib import nullcontext
 from pathlib import Path
@@ -17,7 +18,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from aigc_recognizer.config import AppConfig, config_argument_parser, load_config
-from aigc_recognizer.data.dataset import AIGCManifestDataset
+from aigc_recognizer.data.dataset import AIGCManifestDataset, validate_preparation
 from aigc_recognizer.losses import robust_detection_loss
 from aigc_recognizer.metrics import binary_metrics
 from aigc_recognizer.model import FrozenClipDetector, create_detector
@@ -57,7 +58,8 @@ def make_loaders(config: AppConfig) -> tuple[DataLoader[Any], DataLoader[Any]]:
         "worker_init_fn": seed_worker,
     }
     if config.training.num_workers > 0:
-        common["persistent_workers"] = True
+        common["persistent_workers"] = config.training.persistent_workers
+        common["prefetch_factor"] = config.training.prefetch_factor
     train_loader = DataLoader(
         train_dataset,
         shuffle=True,
@@ -67,6 +69,16 @@ def make_loaders(config: AppConfig) -> tuple[DataLoader[Any], DataLoader[Any]]:
     )
     val_loader = DataLoader(val_dataset, shuffle=False, drop_last=False, **common)
     return train_loader, val_loader
+
+
+def _shutdown_loader_workers(loader: DataLoader[Any]) -> None:
+    """Stop persistent workers immediately instead of waiting for garbage collection."""
+    iterator = getattr(loader, "_iterator", None)
+    shutdown = getattr(iterator, "_shutdown_workers", None)
+    if callable(shutdown):
+        shutdown()
+    if hasattr(loader, "_iterator"):
+        loader._iterator = None
 
 
 def make_scheduler(
@@ -122,8 +134,7 @@ def train_one_epoch(
     for batch_index, batch in enumerate(progress):
         clean_views, transformed_views, labels = _move_batch(batch, device)
         with _autocast_context(config, device):
-            clean = model(clean_views)
-            transformed = model(transformed_views)
+            clean, transformed = model.forward_pair(clean_views, transformed_views)
             losses = robust_detection_loss(clean, transformed, labels, config.loss)
             scaled_loss = losses["total"] / accumulation
         scaler.scale(scaled_loss).backward()
@@ -165,8 +176,7 @@ def evaluate(
     for batch in tqdm(loader, desc="Validate", leave=False):
         clean_views, transformed_views, labels = _move_batch(batch, device)
         with _autocast_context(config, device):
-            clean = model(clean_views)
-            transformed = model(transformed_views)
+            clean, transformed = model.forward_pair(clean_views, transformed_views)
             losses = robust_detection_loss(clean, transformed, labels, config.loss)
         examples = labels.numel()
         example_count += examples
@@ -257,12 +267,14 @@ def _resume(
     )
 
 
-def run_training(config: AppConfig, model: FrozenClipDetector | None = None) -> Path:
-    """Run end-to-end training and return the best checkpoint path."""
-    seed_everything(config.project.seed)
-    device = resolve_device(config)
-    LOGGER.info("Training on device %s", device)
-    train_loader, val_loader = make_loaders(config)
+def _run_training_loop(
+    config: AppConfig,
+    model: FrozenClipDetector | None,
+    device: torch.device,
+    train_loader: DataLoader[Any],
+    val_loader: DataLoader[Any],
+) -> Path:
+    """Run the model and optimization lifecycle using initialized loaders."""
     detector = model if model is not None else create_detector(config.model)
     detector.to(device)
     counts = detector.parameter_counts()
@@ -373,13 +385,47 @@ def run_training(config: AppConfig, model: FrozenClipDetector | None = None) -> 
     return best_path
 
 
+def run_training(config: AppConfig, model: FrozenClipDetector | None = None) -> Path:
+    """Run end-to-end training and always release loader and CUDA resources."""
+    validate_preparation(config)
+    seed_everything(config.project.seed)
+    device = resolve_device(config)
+    LOGGER.info("Training on device %s", device)
+    train_loader, val_loader = make_loaders(config)
+    try:
+        return _run_training_loop(config, model, device, train_loader, val_loader)
+    finally:
+        _shutdown_loader_workers(train_loader)
+        _shutdown_loader_workers(val_loader)
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
+
+
 def main() -> None:
     """Run the public training command."""
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     parser = config_argument_parser("Train a robust multi-view AIGC detector.")
     args = parser.parse_args()
     config = load_config(args.config, args.set)
-    best_path = run_training(config)
+    previous_signal_handlers: dict[signal.Signals, Any] = {}
+
+    def interrupt_training(signum: int, _frame: Any) -> None:
+        signal_name = signal.Signals(signum).name
+        raise KeyboardInterrupt(f"Training received {signal_name}.")
+
+    for signal_name in ("SIGHUP", "SIGTERM"):
+        selected_signal = getattr(signal, signal_name, None)
+        if selected_signal is not None:
+            previous_signal_handlers[selected_signal] = signal.getsignal(selected_signal)
+            signal.signal(selected_signal, interrupt_training)
+    try:
+        best_path = run_training(config)
+    except KeyboardInterrupt as exc:
+        LOGGER.warning("Training interrupted; data loader workers are shutting down. %s", exc)
+        raise SystemExit(130) from exc
+    finally:
+        for selected_signal, previous_handler in previous_signal_handlers.items():
+            signal.signal(selected_signal, previous_handler)
     LOGGER.info("Training completed. Best checkpoint: %s", best_path)
 
 

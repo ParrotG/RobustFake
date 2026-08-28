@@ -80,6 +80,26 @@ class FrozenClipDetector(nn.Module):
         projections = F.normalize(self.projection_head(features), dim=-1)
         return DetectorOutput(logits=logits, features=features, projections=projections)
 
+    def forward_pair(
+        self, clean_views: torch.Tensor, transformed_views: torch.Tensor
+    ) -> tuple[DetectorOutput, DetectorOutput]:
+        """Process clean and transformed views in one larger encoder invocation."""
+        if clean_views.shape != transformed_views.shape:
+            raise ValueError("Clean and transformed view tensors must have matching shapes.")
+        batch_size = clean_views.shape[0]
+        combined = self(torch.cat([clean_views, transformed_views], dim=0))
+        clean = DetectorOutput(
+            logits=combined.logits[:batch_size],
+            features=combined.features[:batch_size],
+            projections=combined.projections[:batch_size],
+        )
+        transformed = DetectorOutput(
+            logits=combined.logits[batch_size:],
+            features=combined.features[batch_size:],
+            projections=combined.projections[batch_size:],
+        )
+        return clean, transformed
+
     def trainable_state_dict(self) -> dict[str, torch.Tensor]:
         """Return only small trainable state, excluding frozen CLIP weights."""
         return {

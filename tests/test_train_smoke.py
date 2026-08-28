@@ -49,6 +49,10 @@ def make_manifest(root: Path) -> Path:
         "\n".join(json.dumps(record) for record in records) + "\n",
         encoding="utf-8",
     )
+    (root / "audit.json").write_text(
+        json.dumps({"complete": True, "selected": len(records)}) + "\n",
+        encoding="utf-8",
+    )
     return manifest
 
 
@@ -60,6 +64,7 @@ def test_cpu_smoke_training_and_resume(tmp_path: Path) -> None:
     config = load_config(DEFAULT_CONFIG)
     config.data.output_dir = str(tmp_path / "dataset")
     config.data.manifest_path = str(make_manifest(Path(config.data.output_dir)))
+    config.data.audit_path = str(Path(config.data.output_dir) / "audit.json")
     config.views.input_size = 16
     config.model.embedding_dim = 8
     config.model.head_dim = 6

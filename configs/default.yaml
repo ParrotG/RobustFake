@@ -4,26 +4,31 @@ project:
 
 data:
   repo_id: OwensLab/CommunityForensics-Small
-  revision: null
-  cache_dir: data/cache/huggingface
+  revision: 6c539a534c07917307c381f5af4053c6091b5278
+  shard_cache_dir: data/cache/community_forensics_shards
+  shard_indices: [68, 70, 77, 78, 83, 115, 116, 156, 157]
+  max_shard_cache_gb: 12.0
   output_dir: data/processed/community_forensics_20k
   manifest_path: data/processed/community_forensics_20k/manifest.jsonl
   audit_path: data/processed/community_forensics_20k/audit.json
+  hf_auth: auto
   max_scanned: 150000
-  shuffle_buffer: 2048
+  checkpoint_every_scanned: 1000
+  network_max_retries: 5
+  network_retry_base_seconds: 5.0
   max_download_gb: 22.0
   max_image_pixels: 50000000
   train_per_class: 8000
   val_per_class: 2000
-  train_generator_percent: 85
+  train_generator_percent: 80
   architecture_ratios:
     LatDiff: 0.60
     GAN: 0.15
     PixDiff: 0.10
     other: 0.15
   systematic_per_model_cap: 6
-  non_systematic_per_model_cap: 100
-  max_real_source_fraction: 0.60
+  non_systematic_per_model_cap: 2000
+  max_real_source_fraction: 0.70
   exclude_nsfw: true
   excluded_generator_tokens:
     - dall-e
@@ -78,12 +83,14 @@ loss:
 
 training:
   epochs: 12
-  batch_size: 4
-  gradient_accumulation_steps: 8
+  batch_size: 32
+  gradient_accumulation_steps: 1
   learning_rate: 0.0003
   weight_decay: 0.0001
   warmup_fraction: 0.10
-  num_workers: 4
+  num_workers: 8
+  prefetch_factor: 2
+  persistent_workers: false
   amp: true
   amp_dtype: fp16
   device: auto

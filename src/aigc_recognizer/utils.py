@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import ctypes
 import json
 import os
 import random
+import signal
+import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,6 +16,8 @@ from typing import Any
 import numpy as np
 import torch
 import yaml
+
+PR_SET_PDEATHSIG = 1
 
 
 def seed_everything(seed: int) -> None:
@@ -25,8 +30,19 @@ def seed_everything(seed: int) -> None:
 
 
 def seed_worker(worker_id: int) -> None:
-    """Seed a data loader worker from the PyTorch-provided worker seed."""
+    """Configure parent-death cleanup and seed a data loader worker."""
     del worker_id
+    if sys.platform.startswith("linux"):
+        parent_pid = os.getppid()
+        try:
+            libc = ctypes.CDLL(None, use_errno=True)
+            if libc.prctl(PR_SET_PDEATHSIG, signal.SIGTERM, 0, 0, 0) != 0:
+                raise OSError(ctypes.get_errno(), "prctl(PR_SET_PDEATHSIG) failed")
+            if os.getppid() != parent_pid:
+                os.kill(os.getpid(), signal.SIGTERM)
+        except (AttributeError, OSError):
+            # PyTorch's worker watchdog remains the fallback on unsupported kernels.
+            pass
     worker_seed = torch.initial_seed() % (2**32)
     random.seed(worker_seed)
     np.random.seed(worker_seed)

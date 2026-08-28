@@ -15,6 +15,40 @@ from aigc_recognizer.config import AppConfig
 from aigc_recognizer.data.transforms import RobustPairTransform
 
 
+def validate_preparation(config: AppConfig) -> dict[str, Any]:
+    """Reject absent or incomplete acquisition state before model initialization."""
+    manifest_path = Path(config.data.manifest_path)
+    audit_path = Path(config.data.audit_path)
+    if not manifest_path.is_file():
+        images_dir = Path(config.data.output_dir) / "images"
+        has_partial_images = images_dir.is_dir() and any(
+            path.is_file() for path in images_dir.rglob("*")
+        )
+        detail = (
+            " Image files are present, but preparation did not commit its manifest. "
+            "This can happen after an interrupted preparation run. Rerun aigc-prepare; "
+            "existing matching files will be reused."
+            if has_partial_images
+            else " Run aigc-prepare before training."
+        )
+        raise FileNotFoundError(f"Manifest does not exist: {manifest_path}.{detail}")
+    if not audit_path.is_file():
+        raise FileNotFoundError(
+            f"Preparation audit does not exist: {audit_path}. Rerun aigc-prepare before training."
+        )
+    try:
+        audit = json.loads(audit_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        raise RuntimeError(f"Preparation audit cannot be read: {audit_path}") from exc
+    if not bool(audit.get("complete")):
+        raise RuntimeError(
+            "Dataset preparation is incomplete "
+            f"({audit.get('selected', 0)} images; {audit.get('stop_reason', 'unknown reason')}). "
+            "Rerun aigc-prepare to resume before training."
+        )
+    return audit
+
+
 def load_manifest(path: str | Path, split: str) -> list[dict[str, Any]]:
     """Load and validate one split from an acquisition manifest."""
     manifest_path = Path(path)

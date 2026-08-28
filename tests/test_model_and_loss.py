@@ -42,3 +42,21 @@ def test_robust_loss_is_finite_and_only_heads_receive_gradients() -> None:
     assert torch.isfinite(losses["total"])
     assert all(parameter.grad is None for parameter in encoder.parameters())
     assert model.classifier.weight.grad is not None
+
+
+def test_paired_forward_matches_separate_forward_calls() -> None:
+    config = ModelConfig(embedding_dim=8, head_dim=6, projection_dim=4, dropout=0.0)
+    model = FrozenClipDetector(DummyVisualEncoder(8), config).eval()
+    clean_views = torch.randn(4, 2, 3, 8, 8)
+    transformed_views = torch.randn(4, 2, 3, 8, 8)
+
+    expected_clean = model(clean_views)
+    expected_transformed = model(transformed_views)
+    clean, transformed = model.forward_pair(clean_views, transformed_views)
+
+    assert torch.allclose(clean.logits, expected_clean.logits, atol=1e-6)
+    assert torch.allclose(clean.projections, expected_clean.projections, atol=1e-6)
+    assert torch.allclose(transformed.logits, expected_transformed.logits, atol=1e-6)
+    assert torch.allclose(
+        transformed.projections, expected_transformed.projections, atol=1e-6
+    )
