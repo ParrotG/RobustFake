@@ -104,3 +104,47 @@ output:
   root_dir: artifacts/runs
   save_last: true
   keep_best_only: false
+
+official_evaluation:
+  repo_id: hy2628982280/WildFake
+  revision: master
+  output_dir: data/evaluation/wildfake_official
+  manifest_path: data/evaluation/wildfake_official/manifest.jsonl
+  audit_path: data/evaluation/wildfake_official/audit.json
+  metadata_dir: data/cache/wildfake_official_metadata
+  checkpoint_path: artifacts/runs/clip_b16_multiview/best.pt
+  results_path: artifacts/evaluations/wildfake_official/results.json
+  predictions_path: artifacts/evaluations/wildfake_official/predictions.jsonl
+  dalle_metadata_file: label_csv_files/dalle3.csv
+  coco_metadata_file: label_csv_files/real_coco.csv
+  dalle_archive_file: Images/Diffusion_based/DALLE.zip
+  coco_archive_file: Images/Real/coco.zip
+  dalle_archive_sha256: 5e4ebc56daa06ebeec99711b9cc204571558d3e17366f2df992a8cfd4f251d4c
+  coco_archive_sha256: 0b4dda0968e5f0d3cb60434c24204fcdac1cc0b40018093f15307edd545905b3
+  expected_real_count: 4998
+  expected_fake_count: 8843
+  max_download_gb: 4.0
+  checkpoint_every: 100
+  request_timeout_seconds: 60.0
+  network_max_retries: 5
+  network_retry_backoff: 1.0
+  batch_size: 32
+  num_workers: 8
+  prefetch_factor: 2
+  save_predictions: true
+  scenarios:
+    - clean
+    - jpeg_90
+    - jpeg_70
+    - jpeg_50
+    - jpeg_30
+    - blur_0.5
+    - blur_1.0
+    - blur_2.0
+    - resize_0.5
+    - resize_0.25
+    - noise_0.02
+    - noise_0.05
+    - noise_0.10
+    - color_jitter_0.20
+    - center_crop_0.80

@@ -134,6 +134,17 @@ checkpoint 包含检测头、optimizer、scheduler、AMP scaler、epoch、global
 
 每轮在固定 seed 的验证增强上分别计算 clean/transformed 的 AUROC、Average Precision、Balanced Accuracy 和 F1，并以 clean/transformed AUROC 均值作为最佳模型指标。
 
+训练完成后可使用题目指定的 WildFake 展示子集做独立测试。该子集严格由元数据定义为 4,998 张 COCO val2017 真实图与 8,843 张 DALL·E Advanced 生成图，存放在 `data/evaluation/`，不会写入或复用训练 manifest：
+
+```bash
+uv run aigc-prepare-official-eval --config configs/default.yaml
+uv run aigc-evaluate-official --config configs/default.yaml
+```
+
+WildFake 仓库整体约 1.2TB，而 DALL·E ZIP 约 25.6GB。准备命令校验上游 archive SHA-256，并通过 ZIP HTTP Range 只提取题目指定成员，实际选择图片约 2.93GB；下载中断后根据原子 manifest 继续。若上游 archive 身份或官方元数据数量不再是 real 4,998/fake 8,843，命令会拒绝评测。
+
+评测矩阵包括 clean、JPEG quality 90/70/50/30、Gaussian blur sigma 0.5/1.0/2.0、resize 0.5/0.25、Gaussian noise sigma 0.02/0.05/0.10、color jitter ±20% 和 center crop 80%。每个场景输出 AUROC、AP、balanced accuracy、F1、真假类别 recall 与混淆计数，同时保留逐图片置信度，便于完成鲁棒性表格和错误分析。
+
 `metrics.jsonl` 的每条记录包含 schema version、UTC timestamp、session ID、epoch 和 global step，允许恢复训练后继续形成明确的时间序列。
 
 ## 7. 复现与已知限制
@@ -144,4 +155,4 @@ checkpoint 包含检测头、optimizer、scheduler、AMP scaler、epoch、global
 - 感知哈希去重目前排除完全相同的 pHash，不进行昂贵的全局近邻检索。
 - Systematic 验证集衡量未见 `model_name`；Manual/Commercial 因架构生成器数量过少采用图像级划分，不能作为未见生成器指标。
 - 被动检测器不能作为真实性证明，实际应用必须表达不确定性并控制真实图片误报。
-- 后续版本应加入 WildFake/SID_Set 外部验证、完整变换严重度矩阵、阈值校准和最终提交推理接口。
+- 后续版本应加入 SID_Set 等第二外部域、阈值校准和最终提交推理接口。

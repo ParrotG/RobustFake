@@ -115,11 +115,11 @@ L = 1.0 × mean(BCE(clean), BCE(degraded))
 
 The two BCE terms teach classification on both clean and transformed inputs. Logit consistency treats the clean prediction as a stable target for its degraded counterpart. The supervised contrastive term groups clean and degraded projections by real/fake label within each batch.
 
-Default optimization uses AdamW, cosine decay after 10% linear warmup, FP16 automatic mixed precision, gradient clipping, and early stopping. A micro-batch of 16 with two-step gradient accumulation gives an effective batch size of 32. Clean and transformed views are combined into one encoder invocation to improve GPU occupancy while preserving the loss formulation.
+Default optimization uses AdamW, cosine decay after 10% linear warmup, FP16 automatic mixed precision, gradient clipping, and early stopping. A micro-batch of 32 gives an effective batch size of 32. Clean and transformed views are combined into one encoder invocation to improve GPU occupancy while preserving the loss formulation.
 
 ### Validation and Evaluation
 
-Validation transforms are seeded from the project seed and record ID, making metrics comparable across runs. The validation fake generators are disjoint from training generators.
+Validation transforms are seeded from the project seed and record ID, making metrics comparable across runs. Systematic fake generators are disjoint between training and validation; Manual generators are shared because that subset has too few identities to satisfy all architecture quotas.
 
 Every epoch reports metrics separately for clean and degraded validation inputs:
 
@@ -131,7 +131,7 @@ Every epoch reports metrics separately for clean and degraded validation inputs:
 
 The checkpoint selection score is the arithmetic mean of clean and degraded AUROC. This avoids choosing a model that performs well only on pristine images or only on the sampled degradation distribution.
 
-For a final robustness report, evaluate `best.pt` on an external generator-disjoint dataset and on a severity matrix for each transformation. That external test suite and the final competition inference CLI are intentionally outside the current implementation.
+The external evaluation command uses the challenge-prescribed WildFake subset: 4,998 COCO val2017 real images and 8,843 DALL-E Advanced fake images. It reports the clean result and every severity listed in the challenge statement.
 
 ## Installation
 
@@ -211,6 +211,24 @@ uv run aigc-train \
 
 Resume validation rejects a checkpoint if its backbone identity or dataset revision differs from the active configuration and manifest.
 
+## Official WildFake Evaluation
+
+Prepare only the prescribed subset without downloading the 1.2TB WildFake repository or its complete 25.6GB DALL-E archive:
+
+```bash
+uv run aigc-prepare-official-eval --config configs/default.yaml
+```
+
+The preparer validates the pinned archive SHA-256 values, reads the official metadata, and uses HTTP Range requests to extract only COCO val2017 and DALL-E Advanced. Approximately 2.91GB of selected image payload is required. Preparation is isolated under `data/evaluation/` and never modifies the training manifest.
+
+Evaluate `best.pt` on clean inputs and the exact challenge severities:
+
+```bash
+uv run aigc-evaluate-official --config configs/default.yaml
+```
+
+The default matrix contains JPEG quality 90/70/50/30, Gaussian blur sigma 0.5/1.0/2.0, resize 0.5/0.25, Gaussian noise sigma 0.02/0.05/0.10, color jitter within 20%, and center crop 80%. Results and per-image predictions are written under `artifacts/evaluations/wildfake_official/`.
+
 ## Outputs
 
 ```text
@@ -224,6 +242,15 @@ artifacts/runs/clip_b16_multiview/
 ├── last.pt                 Latest optimizer/training state
 ├── metrics.jsonl           Timestamped epoch metrics
 └── resolved_config.yaml    Exact resolved run configuration
+
+data/evaluation/wildfake_official/
+├── images/                 Isolated official evaluation images
+├── manifest.jsonl          Exact 13,841-image evaluation manifest
+└── audit.json              Source archive identities and counts
+
+artifacts/evaluations/wildfake_official/
+├── results.json            Clean and severity-matrix metrics
+└── predictions.jsonl       Per-image confidence scores
 ```
 
 The checkpoints store the trainable detector heads, optimizer, scheduler, AMP scaler, epoch, global step, random state, complete configuration, dataset revision, backbone identity, and parameter counts. Frozen CLIP weights are not duplicated in the checkpoint.

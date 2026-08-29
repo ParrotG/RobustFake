@@ -142,6 +142,55 @@ class OutputConfig:
 
 
 @dataclass
+class OfficialEvaluationConfig:
+    repo_id: str = "hy2628982280/WildFake"
+    revision: str = "master"
+    output_dir: str = "data/evaluation/wildfake_official"
+    manifest_path: str = "data/evaluation/wildfake_official/manifest.jsonl"
+    audit_path: str = "data/evaluation/wildfake_official/audit.json"
+    metadata_dir: str = "data/cache/wildfake_official_metadata"
+    checkpoint_path: str = "artifacts/runs/clip_b16_multiview/best.pt"
+    results_path: str = "artifacts/evaluations/wildfake_official/results.json"
+    predictions_path: str = "artifacts/evaluations/wildfake_official/predictions.jsonl"
+    dalle_metadata_file: str = "label_csv_files/dalle3.csv"
+    coco_metadata_file: str = "label_csv_files/real_coco.csv"
+    dalle_archive_file: str = "Images/Diffusion_based/DALLE.zip"
+    coco_archive_file: str = "Images/Real/coco.zip"
+    dalle_archive_sha256: str = "5e4ebc56daa06ebeec99711b9cc204571558d3e17366f2df992a8cfd4f251d4c"
+    coco_archive_sha256: str = "0b4dda0968e5f0d3cb60434c24204fcdac1cc0b40018093f15307edd545905b3"
+    expected_real_count: int = 4_998
+    expected_fake_count: int = 8_843
+    max_download_gb: float = 4.0
+    checkpoint_every: int = 100
+    request_timeout_seconds: float = 60.0
+    network_max_retries: int = 5
+    network_retry_backoff: float = 1.0
+    batch_size: int = 32
+    num_workers: int = 8
+    prefetch_factor: int = 2
+    save_predictions: bool = True
+    scenarios: list[str] = field(
+        default_factory=lambda: [
+            "clean",
+            "jpeg_90",
+            "jpeg_70",
+            "jpeg_50",
+            "jpeg_30",
+            "blur_0.5",
+            "blur_1.0",
+            "blur_2.0",
+            "resize_0.5",
+            "resize_0.25",
+            "noise_0.02",
+            "noise_0.05",
+            "noise_0.10",
+            "color_jitter_0.20",
+            "center_crop_0.80",
+        ]
+    )
+
+
+@dataclass
 class AppConfig:
     project: ProjectConfig = field(default_factory=ProjectConfig)
     data: DataConfig = field(default_factory=DataConfig)
@@ -151,6 +200,9 @@ class AppConfig:
     loss: LossConfig = field(default_factory=LossConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
+    official_evaluation: OfficialEvaluationConfig = field(
+        default_factory=OfficialEvaluationConfig
+    )
 
     def validate(self) -> None:
         """Validate cross-field constraints before any expensive work starts."""
@@ -212,6 +264,44 @@ class AppConfig:
             raise ConfigError("Worker count must be non-negative and prefetch factor positive.")
         if self.training.amp_dtype not in {"fp16", "bf16"}:
             raise ConfigError("training.amp_dtype must be fp16 or bf16.")
+        official = self.official_evaluation
+        if official.repo_id != "hy2628982280/WildFake":
+            raise ConfigError("Only hy2628982280/WildFake is supported for official evaluation.")
+        if official.expected_real_count <= 0 or official.expected_fake_count <= 0:
+            raise ConfigError("Official evaluation class counts must be positive.")
+        if official.max_download_gb <= 0 or official.checkpoint_every <= 0:
+            raise ConfigError("Official evaluation limits must be positive.")
+        if official.request_timeout_seconds <= 0 or official.network_max_retries < 0:
+            raise ConfigError("Official evaluation network settings are invalid.")
+        if official.network_retry_backoff <= 0:
+            raise ConfigError("Official evaluation retry backoff must be positive.")
+        if official.batch_size <= 0 or official.num_workers < 0:
+            raise ConfigError("Official evaluation loader settings are invalid.")
+        if official.prefetch_factor <= 0:
+            raise ConfigError("Official evaluation prefetch factor must be positive.")
+        supported_scenarios = {
+            "clean",
+            "jpeg_90",
+            "jpeg_70",
+            "jpeg_50",
+            "jpeg_30",
+            "blur_0.5",
+            "blur_1.0",
+            "blur_2.0",
+            "resize_0.5",
+            "resize_0.25",
+            "noise_0.02",
+            "noise_0.05",
+            "noise_0.10",
+            "color_jitter_0.20",
+            "center_crop_0.80",
+        }
+        if not official.scenarios or not set(official.scenarios) <= supported_scenarios:
+            raise ConfigError("Official evaluation contains an unsupported scenario.")
+        if "clean" not in official.scenarios:
+            raise ConfigError("Official evaluation scenarios must include clean.")
+        if len(set(official.scenarios)) != len(official.scenarios):
+            raise ConfigError("Official evaluation scenarios must not contain duplicates.")
 
     def to_dict(self) -> dict[str, Any]:
         """Return a serialization-safe representation."""
@@ -227,6 +317,7 @@ _SECTIONS: dict[str, type[Any]] = {
     "loss": LossConfig,
     "training": TrainingConfig,
     "output": OutputConfig,
+    "official_evaluation": OfficialEvaluationConfig,
 }
 
 
