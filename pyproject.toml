@@ -21,10 +21,21 @@ dependencies = [
 dev = [
     "pytest>=8,<9",
 ]
+provenance = [
+    "c2pa-python>=0.32,<0.33",
+    "pillow-heif>=0.18,<2",
+]
+cv = [
+    "opencv-python-headless>=4.10,<5",
+]
 
 [project.scripts]
 aigc-prepare = "aigc_recognizer.data.prepare:main"
 aigc-train = "aigc_recognizer.train:main"
+aigc-provenance = "aigc_recognizer.provenance:main"
+aigc-perspective = "aigc_recognizer.perspective:main"
+aigc-visualize-residuals = "aigc_recognizer.visualize_residuals:main"
+aigc-visualize-rgba = "aigc_recognizer.visualize_rgba:main"
 
 [build-system]
 requires = ["hatchling"]

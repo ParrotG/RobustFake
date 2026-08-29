@@ -1,0 +1,41 @@
+{
+  "generated_at": "2026-08-29T15:32:24.244314+00:00",
+  "input": "/Users/furnace/Downloads/1.jpg",
+  "records": [
+    {
+      "basis": "valid_c2pa",
+      "c2pa_conclusion": "C2PA 完整性有效并声明训练算法生成媒体，但签名凭证未被信任或未建立信任。",
+      "confidence": "medium",
+      "exif_conclusion": {
+        "camera_field_count": 0,
+        "detail_field_count": 0,
+        "interpretation": "详细 EXIF 只能提高元数据可信度，不能单独证明图片真实；EXIF 可以被编辑或移除。",
+        "label_zh": "缺少或极少 EXIF",
+        "level": "missing_or_minimal",
+        "metadata_confidence": "none",
+        "populated_fields": [],
+        "structural_fields": [
+          "format",
+          "width",
+          "height",
+          "pixel_count"
+        ],
+        "support": "no_meaningful_metadata_support"
+      },
+      "path": "/Users/furnace/Downloads/1.jpg",
+      "reason": "C2PA 对 AI 生成有明确声明，但由于签名信任不足，结论降为中等置信度。",
+      "sha256": "bdc5c19d4211d9c9f9f8dce5bf4e4dec29e9b32e308ff12a60979481e928154f",
+      "verdict": "fake",
+      "verdict_label_zh": "疑似虚假（C2PA 声明 AI 生成）"
+    }
+  ],
+  "report_type": "semantic_provenance_assessment",
+  "schema_version": 1,
+  "summary": {
+    "fake_count": 1,
+    "interpretation": "C2PA 是主要判断依据；EXIF 详细程度只能作为辅助证据，不能单独证明真实。",
+    "real_count": 0,
+    "total": 1,
+    "unknown_count": 0
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "curvature": {
+    "contours": [],
+    "curved_contour_count": 0,
+    "curved_contour_fraction": 0.0,
+    "fisheye_evidence": false,
+    "long_contour_count": 0,
+    "score": 0.0
+  },
+  "detection": {
+    "deduplicated_line_count": 4,
+    "length_cv": null,
+    "length_std": 0.0,
+    "lines": [],
+    "mean_length": 0.0,
+    "parallel_group_count": 0,
+    "parallel_groups": [],
+    "raw_line_count": 4,
+    "similar_length_line_count": 0
+  },
+  "image": {
+    "height": 1024,
+    "scale": 1.0,
+    "width": 1024
+  },
+  "intersections": {
+    "count": 0,
+    "points": []
+  },
+  "perspective": {
+    "reason": "At least three similar-length long lines are required.",
+    "relationship": "insufficient_evidence"
+  },
+  "schema_version": 1
+}

@@ -1,0 +1,219 @@
+- generic [ref=e1]:
+  - generic [ref=e3]:
+    - generic [ref=e4]:
+      - generic [ref=e7]:
+        - generic [ref=e8]:
+          - button [ref=e9] [cursor=pointer]
+          - button [ref=e13] [cursor=pointer]
+          - heading "飞书云文档" [level=1] [ref=e17] [cursor=pointer]
+        - generic [ref=e19]:
+          - generic [ref=e20]:
+            - generic [ref=e21]: P
+            - generic [ref=e23]: Phyllis Chua的云文档
+          - generic [ref=e28]:
+            - button "与我分享" [ref=e30]
+            - list [ref=e37]:
+              - generic [ref=e39] [cursor=pointer]:
+                - generic [ref=e41]: 💫
+                - button "TikTok TechJam 2026 Information Document" [ref=e45]
+      - generic [ref=e47]:
+        - generic [ref=e50]:
+          - generic [ref=e52] [cursor=pointer]
+          - generic [ref=e57]:
+            - generic [ref=e59]:
+              - generic [ref=e60]:
+                - generic [ref=e61]: ByteDance
+                - paragraph [ref=e66]:
+                  - generic [ref=e67]: 💫
+                  - generic [ref=e71]: TikTok TechJam 2026 Information Document
+              - paragraph [ref=e74]: 最新修改时间为08月28日
+            - generic [ref=e78]:
+              - button "登录/注册" [ref=e80] [cursor=pointer]
+              - button [ref=e81] [cursor=pointer]
+        - generic [ref=e88]:
+          - generic [ref=e92]:
+            - generic [ref=e94] [cursor=pointer]
+            - list [ref=e99] [cursor=pointer]:
+              - listitem [ref=e446]
+              - listitem [ref=e447]:
+                - link "4.2 Problem Statement" [ref=e448]:
+                  - /url: "#N6axdEFYOoWoMUxNZwKmsttXych"
+              - listitem [ref=e452]:
+                - 'link "I. Core Architecture: Intent Routing & Hybrid Pipeline" [ref=e453]':
+                  - /url: "#PHUId2g3gohNJrx49RsmavNhyYg"
+              - listitem [ref=e457]:
+                - 'link "II. Dialog Strategy: Multi-Turn Scenario Evolution" [ref=e458]':
+                  - /url: "#OBwed5LsBoTnFBxeEKDmV7d0yzc"
+              - listitem [ref=e462]:
+                - 'link "III. Self-Evolution: Dynamic Context Programming" [ref=e463]':
+                  - /url: "#PNhhdzT3ZoKnw0xQ5G4mzv7FyXc"
+              - listitem [ref=e467]:
+                - 'link "IV. Evaluation Matrix: Product & Efficiency Metrics" [ref=e468]':
+                  - /url: "#Dex6dUbtdojaccxCa5GmGSsaybc"
+              - listitem [ref=e472]:
+                - link "4.3 Constraints & Scope" [ref=e473]:
+                  - /url: "#HRQwddatvod91Wx8d9cmlk8Ayge"
+              - listitem [ref=e477]:
+                - link "4.4 Available Resources & Data" [ref=e478]:
+                  - /url: "#SyMVd34O6o2gEsxc5HZmMLoWyvi"
+              - listitem [ref=e482]:
+                - link "4.5 Deliverables" [ref=e483]:
+                  - /url: "#T4gbdQO3posQdxxe8aNmeVUWySb"
+              - listitem [ref=e487]:
+                - link "4.6 Judging Criteria" [ref=e488]:
+                  - /url: "#SQN2dXR6Ro9V21xTImSmvPRbyhu"
+              - listitem [ref=e492]:
+                - link "5. Robust Detection of AI‑Generated Images Under Real‑World Transformations" [ref=e493]:
+                  - /url: "#B2ard1iD8oaXv1xl7opmU0Ioyxb"
+              - listitem [ref=e497]:
+                - link "5.1 Background" [ref=e498]:
+                  - /url: "#NrEJdho2SoSnsZxl5lRmmjI2y1e"
+              - listitem [ref=e502]:
+                - link "5.2 Problem Statement" [active] [ref=e503]:
+                  - /url: "#Le4Kd9XeooSAp4xxwzNmI0piyxh"
+              - listitem [ref=e507]:
+                - link "5.3 Constraints & Scope" [ref=e508]:
+                  - /url: "#ThRQdXlPbogcgyxU1ZomKfBByIb"
+              - listitem [ref=e512]:
+                - link "5.4 Available Resources & Data" [ref=e513]:
+                  - /url: "#BAtydOsKhoiYruxyOmpmGGJqyEM"
+              - listitem [ref=e517]:
+                - link "5.5 Expected Deliverables" [ref=e518]:
+                  - /url: "#XveudbhNToZrcbx5uDNm5RSUyEg"
+              - listitem [ref=e522]:
+                - link "5.6 Judging Criteria" [ref=e523]:
+                  - /url: "#S8pTdmKMnoXh3ux4o6tmwgtyyvh"
+              - listitem [ref=e527]:
+                - link "72-Hour Challenge & Project Submissions" [ref=e528]:
+                  - /url: "#doxmy5M0dbFbdLuJR2WmSDX4aqc"
+              - listitem [ref=e532]:
+                - link "How To Submit Your Project" [ref=e533]:
+                  - /url: "#doxmyUsLeBJ7xfsqzW5YnhAelwT"
+              - listitem [ref=e537]:
+                - link "Judging Criteria" [ref=e538]:
+                  - /url: "#doxmyvSyaIz5k8JfrsUeS1yVrzf"
+              - listitem [ref=e542]:
+                - link "Prizes" [ref=e543]:
+                  - /url: "#doxmydW9ffY8trOkys4BqrxdNWe"
+              - listitem [ref=e547]:
+                - link "People's Choice Award" [ref=e548]:
+                  - /url: "#doxmyGpeh9tDfzNuuooMSQwsfyy"
+              - listitem [ref=e552]:
+                - link "Join Our Community" [ref=e553]:
+                  - /url: "#ORZYdmFEjotliAxg0mMm422GyJd"
+              - listitem [ref=e557]:
+                - link "FAQ" [ref=e558]:
+                  - /url: "#doxmyPMbfsE4G5lZH6HoONCWXag"
+              - listitem [ref=e562]:
+                - link "Privacy Notice" [ref=e563]:
+                  - /url: "#doxmyZ0iYtZfSEggwow4nfafswh"
+              - listitem
+          - generic [ref=e291]:
+            - generic [ref=e300]:
+              - generic [ref=e301]:
+                - heading "💫 TikTok TechJam 2026 Information Document" [level=1] [ref=e303]:
+                  - generic [ref=e304]: 💫
+                  - generic [ref=e306]: TikTok TechJam 2026 Information Document
+                - generic [ref=e311]:
+                  - generic [ref=e312]: "8930"
+                  - generic [ref=e317]: "13432"
+              - generic [ref=e324]:
+                - generic [ref=e748]:
+                  - generic [ref=e749]: "5."
+                  - generic [ref=e750]: Robust Detection of AI‑Generated Images Under Real‑World Transformations
+                - generic [ref=e757]:
+                  - generic [ref=e758]: ✨
+                  - generic [ref=e763]:
+                    - generic [ref=e764]: Technical Workshop Webinar with Q&A was held on 28 Aug, 5:00 to 5:45pm.
+                    - generic [ref=e773]:
+                      - text: "Webinar Recording:"
+                      - link "#5 Robust Detection of AI‑Generated Images Under Real‑World Transformations.mp4" [ref=e777] [cursor=pointer]:
+                        - /url: https://bytedance.larkoffice.com/wiki/AL3BwetFqi1hlEkNoX1ckaxVnTe
+                - generic [ref=e787]:
+                  - generic [ref=e788]: "5.1"
+                  - generic [ref=e789]: Background
+                - generic [ref=e792]: Generative AI tools are making it easier than ever to create highly realistic synthetic images at scale. This creates new risks for online platforms, including misinformation, impersonation, fraud, and reduced trust in digital content. In practice, detection becomes even harder after images are compressed, cropped, reposted, or lightly edited, so robust methods matter more than lab-only accuracy.
+                - generic [ref=e799]:
+                  - generic [ref=e800]: "5.2"
+                  - generic [ref=e801]: Problem Statement
+                - generic [ref=e804]: We want participants to build a prototype that can distinguish AI-generated images from authentic images with strong robustness under realistic post-processing and redistribution scenarios. The goal is not only to achieve good detection performance on clean data, but also to maintain accuracy after transformations such as blur, compression, color adjustment, cropping, or rescaling. Solutions should present a clear technical approach, an evaluation strategy, and thoughtful discussion of trade-offs such as robustness, generalisation, and false positives.
+                - generic [ref=e809]: "Note: We consider robustness against a subset of the following augmentataions."
+                - generic [ref=e821]:
+                  - table [ref=e822]:
+                    - row [ref=e823]:
+                      - cell "Transform" [ref=e824]
+                      - cell "Parameters" [ref=e831]
+                      - cell "Real-World Analog" [ref=e838]
+                  - table [ref=e848]:
+                    - rowgroup [ref=e853]:
+                      - row [ref=e854]:
+                        - cell "JPEG Compression" [ref=e855]
+                        - cell "quality = 90, 70, 50, 30" [ref=e862]
+                        - cell "Social-media re-encode, messaging" [ref=e869]
+                      - row [ref=e876]:
+                        - cell "Gaussian Blur" [ref=e877]
+                        - cell "kernel σ = 0.5, 1.0, 2.0" [ref=e884]
+                        - cell "Out-of-focus" [ref=e891]
+                      - row [ref=e898]:
+                        - cell "Resize" [ref=e899]
+                        - cell "scale 0.5× / 0.25× then upscale" [ref=e906]
+                        - cell "Thumbnail generation" [ref=e913]
+                      - row [ref=e920]:
+                        - cell "Gaussian Noise" [ref=e921]
+                        - cell "σ = 0.02, 0.05, 0.10" [ref=e928]
+                        - cell "Low-light sensor noise" [ref=e935]
+                      - row [ref=e942]:
+                        - cell "Color Jitter" [ref=e943]
+                        - cell "brightness/contrast/sat. ±20%" [ref=e950]
+                        - cell "Filter apps, auto-enhance" [ref=e957]
+                      - row [ref=e964]:
+                        - cell "Center Crop" [ref=e965]
+                        - cell "crop 80%" [ref=e972]
+                        - cell "Profile-picture cropping, framing" [ref=e979]
+                - generic [ref=e990]:
+                  - generic [ref=e991]: "5.3"
+                  - generic [ref=e992]: Constraints & Scope
+                - generic [ref=e1002]:
+                  - table [ref=e1003]:
+                    - row [ref=e1004]:
+                      - cell "Category" [ref=e1005]
+                      - cell "Constraints & Scope Details" [ref=e1012]
+                  - table [ref=e1022]:
+                    - rowgroup [ref=e1026]:
+                      - row [ref=e1027]:
+                        - cell "In scope" [ref=e1028]
+                        - cell "Image-level AIGC detection, robustness to common image transformations, feature engineering, model design, evaluation design, error analysis, and explainability ideas" [ref=e1035]
+                      - row [ref=e1042]:
+                        - cell "Out of scope" [ref=e1043]
+                        - cell "Full production deployment, platform-wide moderation systems, and non-image modalities such as video or audio" [ref=e1050]
+                      - row [ref=e1057]:
+                        - cell "Limits" [ref=e1058]
+                        - 'cell "Assume a hackathon-scale prototype, limited compute, and no access to internal production systems. Teams should optimise for a convincing proof of concept rather than a production-grade service. Note: Participants must use models with <2B parameters." [ref=e1065]'
+                      - row [ref=e1072]:
+                        - cell "Allowed assumptions" [ref=e1073]
+                        - cell "Teams may use public or properly licensed datasets, create their own transformed test cases, and make reasonable assumptions about deployment context as long as those assumptions are stated clearly." [ref=e1080]
+            - generic [ref=e417]:
+              - generic [ref=e418]: 评论（0）
+              - generic [ref=e420] [cursor=pointer]
+            - button [ref=e428] [cursor=pointer]
+      - generic:
+        - generic:
+          - generic:
+            - menu:
+              - generic:
+                - generic:
+                  - menuitem "帮助中心"
+                - generic:
+                  - menuitem "快捷键"
+          - generic [ref=e434] [cursor=pointer]
+    - generic:
+      - generic:
+        - generic:
+          - generic:
+            - generic:
+              - textbox
+            - generic: 加载中...
+  - textbox [ref=e439]
+  - textbox [ref=e444]
+  - iframe [ref=e445]:
+    

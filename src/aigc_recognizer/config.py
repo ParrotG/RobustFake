@@ -103,6 +103,10 @@ class ModelConfig:
     head_dim: int = 256
     projection_dim: int = 128
     dropout: float = 0.20
+    residual_enabled: bool = True
+    residual_channels: int = 16
+    residual_embedding_dim: int = 64
+    residual_head_dim: int = 64
 
 
 @dataclass
@@ -142,6 +146,54 @@ class OutputConfig:
 
 
 @dataclass
+class ProvenanceConfig:
+    max_files: int = 10_000
+    # Prefer the Rust c2patool CLI when it is installed.  A null path uses PATH
+    # lookup, while an explicit path makes deployments deterministic.
+    c2pa_tool_path: str | None = None
+    c2pa_tool_timeout_seconds: float = 30.0
+    c2pa_remote_manifest_fetch: bool = False
+    c2pa_ocsp_fetch: bool = False
+    c2pa_verify_trust: bool = True
+
+
+@dataclass
+class PerspectiveConfig:
+    max_dimension: int = 1600
+    canny_low_threshold: int = 50
+    canny_high_threshold: int = 150
+    hough_threshold: int = 50
+    hough_min_line_length_ratio: float = 0.12
+    hough_max_line_gap: int = 20
+    min_long_line_length_ratio: float = 0.15
+    similar_length_tolerance: float = 0.25
+    angle_deduplication_degrees: float = 8.0
+    max_lines: int = 24
+    intersection_cluster_ratio: float = 0.035
+    min_intersection_angle_degrees: float = 8.0
+    min_vanishing_point_support: int = 2
+    max_vanishing_distance_ratio: float = 4.0
+    strict_color_length_selection: bool = True
+    strict_color_distance: float = 25.0
+    strict_length_tolerance: float = 0.35
+    strict_max_length_cv: float = 0.20
+    strict_anchor_x_ratio: float = 0.18
+    strict_anchor_y_ratio: float = 0.62
+    strict_angle_band_degrees: float = 35.0
+    parallel_angle_tolerance_degrees: float = 10.0
+    fisheye_min_contour_length_ratio: float = 0.20
+    fisheye_min_contour_elongation: float = 3.0
+    fisheye_min_span_ratio: float = 0.30
+    fisheye_max_curved_contour_count: int = 16
+    fisheye_min_support: int = 2
+    fisheye_min_angle_change_degrees: float = 18.0
+    fisheye_min_chord_excess: float = 0.035
+    fisheye_min_line_residual_ratio: float = 0.025
+    fisheye_score_threshold: float = 0.50
+    fisheye_curvature_threshold: float = 0.045
+
+
+@dataclass
 class AppConfig:
     project: ProjectConfig = field(default_factory=ProjectConfig)
     data: DataConfig = field(default_factory=DataConfig)
@@ -151,6 +203,8 @@ class AppConfig:
     loss: LossConfig = field(default_factory=LossConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
+    provenance: ProvenanceConfig = field(default_factory=ProvenanceConfig)
+    perspective: PerspectiveConfig = field(default_factory=PerspectiveConfig)
 
     def validate(self) -> None:
         """Validate cross-field constraints before any expensive work starts."""
@@ -162,6 +216,12 @@ class AppConfig:
             raise ConfigError("Only the OpenAI pretrained weights are supported in v1.")
         if self.model.embedding_dim != 512:
             raise ConfigError("ViT-B-16 requires model.embedding_dim=512.")
+        if (
+            self.model.residual_channels <= 0
+            or self.model.residual_embedding_dim <= 0
+            or self.model.residual_head_dim <= 0
+        ):
+            raise ConfigError("Residual branch dimensions must be positive.")
         if self.views.input_size != 224:
             raise ConfigError("ViT-B-16 currently requires views.input_size=224.")
         if not 0 < self.views.local_scale_min <= self.views.local_scale_max <= 1:
@@ -212,6 +272,55 @@ class AppConfig:
             raise ConfigError("Worker count must be non-negative and prefetch factor positive.")
         if self.training.amp_dtype not in {"fp16", "bf16"}:
             raise ConfigError("training.amp_dtype must be fp16 or bf16.")
+        if self.provenance.max_files <= 0:
+            raise ConfigError("provenance.max_files must be positive.")
+        if self.provenance.c2pa_tool_timeout_seconds <= 0:
+            raise ConfigError("provenance.c2pa_tool_timeout_seconds must be positive.")
+        perspective = self.perspective
+        if perspective.max_dimension <= 0 or perspective.hough_threshold <= 0:
+            raise ConfigError("Perspective image dimension and Hough threshold must be positive.")
+        if not 0 < perspective.hough_min_line_length_ratio <= 1:
+            raise ConfigError("perspective.hough_min_line_length_ratio must be in (0, 1].")
+        if not 0 < perspective.min_long_line_length_ratio <= 1:
+            raise ConfigError("perspective.min_long_line_length_ratio must be in (0, 1].")
+        if not 0 <= perspective.similar_length_tolerance < 1:
+            raise ConfigError("perspective.similar_length_tolerance must be in [0, 1).")
+        if perspective.max_lines < 3:
+            raise ConfigError("perspective.max_lines must be at least 3.")
+        if not 0 < perspective.intersection_cluster_ratio <= 1:
+            raise ConfigError("perspective.intersection_cluster_ratio must be in (0, 1].")
+        if perspective.min_vanishing_point_support < 2:
+            raise ConfigError("perspective.min_vanishing_point_support must be at least 2.")
+        if perspective.max_vanishing_distance_ratio <= 0:
+            raise ConfigError("perspective.max_vanishing_distance_ratio must be positive.")
+        if perspective.strict_color_distance <= 0 or perspective.strict_length_tolerance <= 0 or perspective.strict_max_length_cv <= 0:
+            raise ConfigError("Strict perspective color and length thresholds must be positive.")
+        if not 0 < perspective.strict_anchor_x_ratio <= 0.5:
+            raise ConfigError("perspective.strict_anchor_x_ratio must be in (0, 0.5].")
+        if not 0 < perspective.strict_anchor_y_ratio <= 1:
+            raise ConfigError("perspective.strict_anchor_y_ratio must be in (0, 1].")
+        if not 0 < perspective.strict_angle_band_degrees < 90:
+            raise ConfigError("perspective.strict_angle_band_degrees must be in (0, 90).")
+        if not 0 < perspective.parallel_angle_tolerance_degrees < 45:
+            raise ConfigError("perspective.parallel_angle_tolerance_degrees must be in (0, 45).")
+        if not 0 < perspective.fisheye_min_contour_length_ratio <= 1:
+            raise ConfigError("perspective.fisheye_min_contour_length_ratio must be in (0, 1].")
+        if perspective.fisheye_min_contour_elongation < 1:
+            raise ConfigError("perspective.fisheye_min_contour_elongation must be at least 1.")
+        if not 0 < perspective.fisheye_min_span_ratio <= 1:
+            raise ConfigError("perspective.fisheye_min_span_ratio must be in (0, 1].")
+        if perspective.fisheye_max_curved_contour_count < perspective.fisheye_min_support:
+            raise ConfigError("perspective.fisheye_max_curved_contour_count must cover min support.")
+        if perspective.fisheye_min_support < 2:
+            raise ConfigError("perspective.fisheye_min_support must be at least 2.")
+        if perspective.fisheye_min_angle_change_degrees <= 0:
+            raise ConfigError("perspective.fisheye_min_angle_change_degrees must be positive.")
+        if perspective.fisheye_min_chord_excess <= 0 or perspective.fisheye_min_line_residual_ratio <= 0:
+            raise ConfigError("Fisheye curvature thresholds must be positive.")
+        if not 0 < perspective.fisheye_score_threshold <= 1:
+            raise ConfigError("perspective.fisheye_score_threshold must be in (0, 1].")
+        if not 0 < perspective.fisheye_curvature_threshold < 1:
+            raise ConfigError("perspective.fisheye_curvature_threshold must be in (0, 1).")
 
     def to_dict(self) -> dict[str, Any]:
         """Return a serialization-safe representation."""
@@ -227,6 +336,8 @@ _SECTIONS: dict[str, type[Any]] = {
     "loss": LossConfig,
     "training": TrainingConfig,
     "output": OutputConfig,
+    "provenance": ProvenanceConfig,
+    "perspective": PerspectiveConfig,
 }
 
 

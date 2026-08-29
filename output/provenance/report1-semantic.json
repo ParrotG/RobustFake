@@ -1,0 +1,49 @@
+{
+  "generated_at": "2026-08-29T15:50:31.613745+00:00",
+  "input": "/Users/furnace/Downloads/IMG.HEIC",
+  "records": [
+    {
+      "basis": "exif_hint",
+      "c2pa_conclusion": "未发现可用于判断真实或 AI 生成的 C2PA 声明。",
+      "confidence": "low",
+      "exif_conclusion": {
+        "camera_field_count": 3,
+        "detail_field_count": 7,
+        "interpretation": "详细 EXIF 只能提高元数据可信度，不能单独证明图片真实；EXIF 可以被编辑或移除。",
+        "label_zh": "详细 EXIF",
+        "level": "detailed",
+        "metadata_confidence": "high",
+        "populated_fields": [
+          "DateTime",
+          "DateTimeDigitized",
+          "DateTimeOriginal",
+          "HostComputer",
+          "Make",
+          "Model",
+          "Software"
+        ],
+        "structural_fields": [
+          "format",
+          "width",
+          "height",
+          "pixel_count"
+        ],
+        "support": "strong_metadata_support"
+      },
+      "path": "/Users/furnace/Downloads/IMG.HEIC",
+      "reason": "详细 EXIF 可以增强元数据可信度，但没有经过验证的 C2PA 来源声明时，不能据此确定图片真实。",
+      "sha256": "b790d829a1fe563d19cf3d753fb3cbd9f76727b6e1ebfda5231b3b659b330987",
+      "verdict": "unknown",
+      "verdict_label_zh": "无法确定"
+    }
+  ],
+  "report_type": "semantic_provenance_assessment",
+  "schema_version": 1,
+  "summary": {
+    "fake_count": 0,
+    "interpretation": "C2PA 是主要判断依据；EXIF 详细程度只能作为辅助证据，不能单独证明真实。",
+    "real_count": 0,
+    "total": 1,
+    "unknown_count": 1
+  }
+}

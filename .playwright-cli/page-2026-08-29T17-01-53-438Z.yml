@@ -1,0 +1,277 @@
+- generic [ref=e1]:
+  - generic [ref=e3]:
+    - generic [ref=e4]:
+      - generic [ref=e7]:
+        - generic [ref=e8]:
+          - button [ref=e9] [cursor=pointer]
+          - button [ref=e13] [cursor=pointer]
+          - heading "飞书云文档" [level=1] [ref=e17] [cursor=pointer]
+        - generic [ref=e19]:
+          - generic [ref=e20]:
+            - generic [ref=e21]: P
+            - generic [ref=e23]: Phyllis Chua的云文档
+          - generic [ref=e28]:
+            - button "与我分享" [ref=e30]
+            - list [ref=e37]:
+              - generic [ref=e39] [cursor=pointer]:
+                - generic [ref=e41]: 💫
+                - button "TikTok TechJam 2026 Information Document" [ref=e45]
+      - generic [ref=e47]:
+        - generic [ref=e50]:
+          - generic [ref=e52] [cursor=pointer]
+          - generic [ref=e57]:
+            - generic [ref=e59]:
+              - generic [ref=e60]:
+                - generic [ref=e61]: ByteDance
+                - paragraph [ref=e66]:
+                  - generic [ref=e67]: 💫
+                  - generic [ref=e71]: TikTok TechJam 2026 Information Document
+              - paragraph [ref=e74]: 最新修改时间为08月28日
+            - generic [ref=e78]:
+              - button "登录/注册" [ref=e80] [cursor=pointer]
+              - button [ref=e81] [cursor=pointer]
+        - generic [ref=e88]:
+          - generic [ref=e92]:
+            - generic [ref=e94] [cursor=pointer]
+            - list [ref=e99] [cursor=pointer]:
+              - listitem [ref=e446]
+              - listitem [ref=e447]:
+                - link "4.2 Problem Statement" [ref=e448]:
+                  - /url: "#N6axdEFYOoWoMUxNZwKmsttXych"
+              - listitem [ref=e452]:
+                - 'link "I. Core Architecture: Intent Routing & Hybrid Pipeline" [ref=e453]':
+                  - /url: "#PHUId2g3gohNJrx49RsmavNhyYg"
+              - listitem [ref=e457]:
+                - 'link "II. Dialog Strategy: Multi-Turn Scenario Evolution" [ref=e458]':
+                  - /url: "#OBwed5LsBoTnFBxeEKDmV7d0yzc"
+              - listitem [ref=e462]:
+                - 'link "III. Self-Evolution: Dynamic Context Programming" [ref=e463]':
+                  - /url: "#PNhhdzT3ZoKnw0xQ5G4mzv7FyXc"
+              - listitem [ref=e467]:
+                - 'link "IV. Evaluation Matrix: Product & Efficiency Metrics" [ref=e468]':
+                  - /url: "#Dex6dUbtdojaccxCa5GmGSsaybc"
+              - listitem [ref=e472]:
+                - link "4.3 Constraints & Scope" [ref=e473]:
+                  - /url: "#HRQwddatvod91Wx8d9cmlk8Ayge"
+              - listitem [ref=e477]:
+                - link "4.4 Available Resources & Data" [ref=e478]:
+                  - /url: "#SyMVd34O6o2gEsxc5HZmMLoWyvi"
+              - listitem [ref=e482]:
+                - link "4.5 Deliverables" [ref=e483]:
+                  - /url: "#T4gbdQO3posQdxxe8aNmeVUWySb"
+              - listitem [ref=e487]:
+                - link "4.6 Judging Criteria" [ref=e488]:
+                  - /url: "#SQN2dXR6Ro9V21xTImSmvPRbyhu"
+              - listitem [ref=e492]:
+                - link "5. Robust Detection of AI‑Generated Images Under Real‑World Transformations" [ref=e493]:
+                  - /url: "#B2ard1iD8oaXv1xl7opmU0Ioyxb"
+              - listitem [ref=e497]:
+                - link "5.1 Background" [ref=e498]:
+                  - /url: "#NrEJdho2SoSnsZxl5lRmmjI2y1e"
+              - listitem [ref=e502]:
+                - link "5.2 Problem Statement" [ref=e503]:
+                  - /url: "#Le4Kd9XeooSAp4xxwzNmI0piyxh"
+              - listitem [ref=e507]:
+                - link "5.3 Constraints & Scope" [ref=e508]:
+                  - /url: "#ThRQdXlPbogcgyxU1ZomKfBByIb"
+              - listitem [ref=e512]:
+                - link "5.4 Available Resources & Data" [active] [ref=e513]:
+                  - /url: "#BAtydOsKhoiYruxyOmpmGGJqyEM"
+              - listitem [ref=e517]:
+                - link "5.5 Expected Deliverables" [ref=e518]:
+                  - /url: "#XveudbhNToZrcbx5uDNm5RSUyEg"
+              - listitem [ref=e522]:
+                - link "5.6 Judging Criteria" [ref=e523]:
+                  - /url: "#S8pTdmKMnoXh3ux4o6tmwgtyyvh"
+              - listitem [ref=e527]:
+                - link "72-Hour Challenge & Project Submissions" [ref=e528]:
+                  - /url: "#doxmy5M0dbFbdLuJR2WmSDX4aqc"
+              - listitem [ref=e532]:
+                - link "How To Submit Your Project" [ref=e533]:
+                  - /url: "#doxmyUsLeBJ7xfsqzW5YnhAelwT"
+              - listitem [ref=e537]:
+                - link "Judging Criteria" [ref=e538]:
+                  - /url: "#doxmyvSyaIz5k8JfrsUeS1yVrzf"
+              - listitem [ref=e542]:
+                - link "Prizes" [ref=e543]:
+                  - /url: "#doxmydW9ffY8trOkys4BqrxdNWe"
+              - listitem [ref=e547]:
+                - link "People's Choice Award" [ref=e548]:
+                  - /url: "#doxmyGpeh9tDfzNuuooMSQwsfyy"
+              - listitem [ref=e552]:
+                - link "Join Our Community" [ref=e553]:
+                  - /url: "#ORZYdmFEjotliAxg0mMm422GyJd"
+              - listitem [ref=e557]:
+                - link "FAQ" [ref=e558]:
+                  - /url: "#doxmyPMbfsE4G5lZH6HoONCWXag"
+              - listitem [ref=e562]:
+                - link "Privacy Notice" [ref=e563]:
+                  - /url: "#doxmyZ0iYtZfSEggwow4nfafswh"
+              - listitem
+          - generic [ref=e291]:
+            - generic [ref=e300]:
+              - generic [ref=e301]:
+                - heading "💫 TikTok TechJam 2026 Information Document" [level=1] [ref=e303]:
+                  - generic [ref=e304]: 💫
+                  - generic [ref=e306]: TikTok TechJam 2026 Information Document
+                - generic [ref=e311]:
+                  - generic [ref=e312]: "8930"
+                  - generic [ref=e317]: "13433"
+              - generic [ref=e324]:
+                - generic [ref=e821]:
+                  - table [ref=e822]:
+                    - row [ref=e1090]:
+                      - cell [ref=e1091]
+                      - cell [ref=e1093]
+                      - cell [ref=e1095]
+                  - table [ref=e848]:
+                    - rowgroup [ref=e853]:
+                      - row [ref=e1097]:
+                        - cell [ref=e1098]
+                        - cell [ref=e1100]
+                        - cell [ref=e1102]
+                      - row [ref=e1104]:
+                        - cell [ref=e1105]
+                        - cell [ref=e1107]
+                        - cell [ref=e1109]
+                      - row [ref=e1111]:
+                        - cell [ref=e1112]
+                        - cell [ref=e1114]
+                        - cell [ref=e1116]
+                      - row [ref=e1118]:
+                        - cell [ref=e1119]
+                        - cell [ref=e1121]
+                        - cell [ref=e1123]
+                      - row [ref=e1125]:
+                        - cell [ref=e1126]
+                        - cell [ref=e1128]
+                        - cell [ref=e1130]
+                      - row [ref=e1132]:
+                        - cell [ref=e1133]
+                        - cell [ref=e1135]
+                        - cell [ref=e1137]
+                - generic [ref=e990]:
+                  - generic [ref=e991]: "5.3"
+                  - generic [ref=e992]: Constraints & Scope
+                - generic [ref=e1002]:
+                  - table [ref=e1003]:
+                    - row [ref=e1004]:
+                      - cell "Category" [ref=e1005]
+                      - cell "Constraints & Scope Details" [ref=e1012]
+                  - table [ref=e1022]:
+                    - rowgroup [ref=e1026]:
+                      - row [ref=e1027]:
+                        - cell "In scope" [ref=e1028]
+                        - cell "Image-level AIGC detection, robustness to common image transformations, feature engineering, model design, evaluation design, error analysis, and explainability ideas" [ref=e1035]
+                      - row [ref=e1042]:
+                        - cell "Out of scope" [ref=e1043]
+                        - cell "Full production deployment, platform-wide moderation systems, and non-image modalities such as video or audio" [ref=e1050]
+                      - row [ref=e1057]:
+                        - cell "Limits" [ref=e1058]
+                        - 'cell "Assume a hackathon-scale prototype, limited compute, and no access to internal production systems. Teams should optimise for a convincing proof of concept rather than a production-grade service. Note: Participants must use models with <2B parameters." [ref=e1065]'
+                      - row [ref=e1072]:
+                        - cell "Allowed assumptions" [ref=e1073]
+                        - cell "Teams may use public or properly licensed datasets, create their own transformed test cases, and make reasonable assumptions about deployment context as long as those assumptions are stated clearly." [ref=e1080]
+                - generic [ref=e1141]:
+                  - generic [ref=e1142]: "5.4"
+                  - generic [ref=e1143]: Available Resources & Data
+                - generic [ref=e1148]:
+                  - generic [ref=e1149]: •
+                  - generic [ref=e1151]: Public or properly licensed image datasets for AIGC detection and image forensics.
+                - generic [ref=e1156]:
+                  - generic [ref=e1157]: •
+                  - generic [ref=e1159]: Self-created transformed samples using operations such as blur, compression, cropping, color adjustment, or rescaling.
+                - generic [ref=e1164]:
+                  - generic [ref=e1165]: •
+                  - generic [ref=e1167]: Public documentation for relevant machine learning and computer vision libraries.
+                - generic [ref=e1171]:
+                  - generic [ref=e1172]:
+                    - generic [ref=e1173]: •
+                    - generic [ref=e1175]: "Datasets:"
+                  - generic [ref=e1179]:
+                    - generic [ref=e1182]:
+                      - generic [ref=e1183]: ◦
+                      - link "https://huggingface.co/datasets/saberzl/SID_Set" [ref=e1190] [cursor=pointer]:
+                        - /url: https://huggingface.co/datasets/saberzl/SID_Set
+                    - generic [ref=e1193]:
+                      - generic [ref=e1194]: ◦
+                      - link "https://www.kaggle.com/datasets/birdy654/cifake-real-and-ai-generated-synthetic-images" [ref=e1201] [cursor=pointer]:
+                        - /url: https://www.kaggle.com/datasets/birdy654/cifake-real-and-ai-generated-synthetic-images
+                    - generic [ref=e1203]:
+                      - generic [ref=e1204]:
+                        - generic [ref=e1205]: ◦
+                        - link "https://modelscope.cn/datasets/hy2628982280/WildFake/summary" [ref=e1212] [cursor=pointer]:
+                          - /url: https://modelscope.cn/datasets/hy2628982280/WildFake/summary
+                      - generic [ref=e1217]:
+                        - generic [ref=e1223]:
+                          - generic [ref=e1224]: •
+                          - generic [ref=e1226]: "For this modelscope dataset, please translate it via the translation button before use:"
+                        - img "飞书文档 - 图片" [ref=e1242]
+                - generic [ref=e1245]: "Validation Dataset (for Demonstration Purposes Only):"
+                - generic [ref=e1250]: "We choose a subset of WildFake for participants to demonstrate their models’ performance and track iterative improvements. This dataset serves only as a reference benchmark and will not contribute to the final score. Do not use the following data during training. Specifically:"
+                - generic [ref=e1262]:
+                  - table [ref=e1263]:
+                    - row [ref=e1264]:
+                      - cell "Dataset" [ref=e1265]
+                      - cell "# Num" [ref=e1272]
+                  - table [ref=e1282]:
+                    - rowgroup [ref=e1287]:
+                      - row [ref=e1288]:
+                        - cell "Non-AIGC" [ref=e1289]
+                        - cell "COCO val2017" [ref=e1296]
+                        - cell "4998" [ref=e1303]
+                      - row [ref=e1310]:
+                        - cell "AIGC" [ref=e1311]
+                        - cell "DALL·E Advanced" [ref=e1318]
+                        - cell "8843" [ref=e1325]
+                - generic [ref=e1336]:
+                  - generic [ref=e1337]: "5.5"
+                  - generic [ref=e1338]: Expected Deliverables
+                - generic [ref=e1343]:
+                  - generic [ref=e1344]: "1."
+                  - generic [ref=e1345]: Written Project Description (via Devpost)
+                - generic [ref=e1349]:
+                  - generic [ref=e1350]:
+                    - generic [ref=e1351]: •
+                    - generic [ref=e1353]: "Provide a clear written description of your project that includes:"
+                  - generic [ref=e1357]:
+                    - generic [ref=e1360]:
+                      - generic [ref=e1361]: ◦
+                      - generic [ref=e1363]: How your solution addresses the problem statement
+                    - generic [ref=e1368]:
+                      - generic [ref=e1369]: ◦
+                      - generic [ref=e1371]: Development tools used (e.g. VSCode, Colab, Jupyter)
+                    - generic [ref=e1376]:
+                      - generic [ref=e1377]: ◦
+                      - generic [ref=e1379]: Models or APIs used
+                    - generic [ref=e1384]:
+                      - generic [ref=e1385]: ◦
+                      - generic [ref=e1387]: Libraries and frameworks used (e.g. Hugging Face Transformers, PyTorch, scikit-learn, pandas)
+                    - generic [ref=e1392]:
+                      - generic [ref=e1393]: ◦
+                      - generic [ref=e1395]: Datasets and assets used
+            - generic [ref=e417]:
+              - generic [ref=e418]: 评论（0）
+              - generic [ref=e420] [cursor=pointer]
+            - button [ref=e428] [cursor=pointer]
+      - generic:
+        - generic:
+          - generic:
+            - menu:
+              - generic:
+                - generic:
+                  - menuitem "帮助中心"
+                - generic:
+                  - menuitem "快捷键"
+          - generic [ref=e434] [cursor=pointer]
+    - generic:
+      - generic:
+        - generic:
+          - generic:
+            - generic:
+              - textbox
+            - generic: 加载中...
+  - textbox [ref=e439]
+  - textbox [ref=e444]
+  - iframe [ref=e445]:
+    

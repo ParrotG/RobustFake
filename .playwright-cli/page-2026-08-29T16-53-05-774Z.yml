@@ -1,0 +1,204 @@
+- generic [ref=e1]:
+  - generic [ref=e4]:
+    - generic [ref=e7]:
+      - generic [ref=e8]:
+        - button [ref=e9] [cursor=pointer]
+        - button [ref=e13] [cursor=pointer]
+        - heading "飞书云文档" [level=1] [ref=e17] [cursor=pointer]
+      - generic [ref=e19]:
+        - generic [ref=e20]:
+          - generic [ref=e21]: P
+          - generic [ref=e23]: Phyllis Chua的云文档
+        - generic [ref=e28]:
+          - button "与我分享" [ref=e30]
+          - list [ref=e37]:
+            - generic [ref=e39] [cursor=pointer]:
+              - generic [ref=e41]: 💫
+              - button "TikTok TechJam 2026 Information Document" [ref=e45]
+    - generic [ref=e47]:
+      - generic [ref=e50]:
+        - generic [ref=e52] [cursor=pointer]
+        - generic [ref=e57]:
+          - generic [ref=e59]:
+            - generic [ref=e60]:
+              - generic [ref=e61]: ByteDance
+              - paragraph [ref=e66]:
+                - generic [ref=e67]: 💫
+                - generic [ref=e71]: TikTok TechJam 2026 Information Document
+            - paragraph [ref=e74]: 最新修改时间为08月28日
+          - generic [ref=e78]:
+            - button "登录/注册" [ref=e80] [cursor=pointer]
+            - button [ref=e81] [cursor=pointer]
+      - generic [ref=e88]:
+        - generic [ref=e92]:
+          - generic [ref=e94] [cursor=pointer]
+          - list [ref=e99] [cursor=pointer]:
+            - listitem
+            - listitem [ref=e100]:
+              - link "💫 TikTok TechJam 2026 Information Document" [ref=e101]:
+                - /url: "#AZPpd70p2o7n6uxtBlim5xGgyce"
+                - generic [ref=e105]:
+                  - generic [ref=e106]: 💫
+                  - text: TikTok TechJam 2026 Information Document
+            - listitem [ref=e108]:
+              - link "TikTok TechJam is back!" [ref=e109]:
+                - /url: "#doxmyJGVkQD02iTkyhhdpryykzL"
+            - listitem [ref=e113]:
+              - link "Who is this Hackathon for?" [ref=e114]:
+                - /url: "#doxmyHBVFggIM1rQyXEYqJGmydh"
+            - listitem [ref=e118]:
+              - link "Key Dates" [ref=e119]:
+                - /url: "#doxmyNd1vC9IwfYkk4OkzuwTfme"
+            - listitem [ref=e123]:
+              - link "How To Register" [ref=e124]:
+                - /url: "#doxmyvGWfZioyE2VLaLC5MQn16b"
+            - listitem [ref=e128]:
+              - link "Registration Form" [ref=e129]:
+                - /url: "#doxmyxSWM7X9aiDDmTf4j338RZw"
+            - listitem [ref=e133]:
+              - link "Devpost" [ref=e134]:
+                - /url: "#doxmyWnrN35zA6yh99gpXmrmClc"
+            - listitem [ref=e138]:
+              - link "Virtual Technical Workshops (28 Aug, Friday, 1-6pm)" [ref=e139]:
+                - /url: "#doxmy1POUwiBIOegxm0JCJHrNPh"
+            - listitem [ref=e143]:
+              - link "Problem Statements" [ref=e144]:
+                - /url: "#doxmy1ndqH0v8Le3ERlOW0L5zse"
+            - listitem [ref=e148]:
+              - 'link "1. Agent Launchpad: Design and Build Lightweight Agent Middleware" [ref=e149]':
+                - /url: "#Yeaqdh5BSoBioxxiLpYmGsJlyyc"
+            - listitem [ref=e153]:
+              - link "1.1 Challenge Overview" [ref=e154]:
+                - /url: "#VvL2di0O2oarBFxT2QRmksYGysc"
+            - listitem [ref=e158]:
+              - link "1.2 Starter Kit" [ref=e159]:
+                - /url: "#LoMDdjEweosZh1xR20LmJl01ygc"
+            - listitem [ref=e163]:
+              - link "What already works" [ref=e164]:
+                - /url: "#MLzqdt0aTof99cxx2wpmYbbJyIe"
+            - listitem [ref=e168]:
+              - link "Current architecture and extension points" [ref=e169]:
+                - /url: "#GkmRd5aLFo6fyuxL00LmE1d4yLc"
+            - listitem [ref=e173]:
+              - link "Intentional limitations" [ref=e174]:
+                - /url: "#ILLLdKQn3o1bIgxoiEWmtKyFyOh"
+            - listitem [ref=e178]:
+              - link "1.3 Run the Baseline Locally" [ref=e179]:
+                - /url: "#WeGUdRxLEogDtDxzRuxmKFceyph"
+            - listitem [ref=e183]:
+              - link "Requirements" [ref=e184]:
+                - /url: "#C1wUdKrQToKcBOxxFmkmFkSTyLc"
+            - listitem [ref=e188]:
+              - link "Clone and start" [ref=e189]:
+                - /url: "#JO42dkHmDoUplWxKwAEmObJRyrf"
+            - listitem [ref=e193]:
+              - link "Baseline acceptance test" [ref=e194]:
+                - /url: "#JbEedbSJEokogwxgIFtmPBGpygl"
+            - listitem [ref=e198]:
+              - link "Development and validation" [ref=e199]:
+                - /url: "#SSfydpuOEoWNYGxqcLBmjelmyb3"
+            - listitem [ref=e203]:
+              - link "1.4 Platform and Middleware Design Requirements" [ref=e204]:
+                - /url: "#YwdBdkDiQo5amLxJrWSmEn47yhd"
+            - listitem [ref=e208]:
+              - link "1.5 Agent Lifecycle and Post-Creation Experience" [ref=e209]:
+                - /url: "#GiBOdUjFCoGER3xD9ngmCSZWypc"
+            - listitem [ref=e213]:
+              - link "1.6 Possible Three-Day Implementation Plan" [ref=e214]:
+                - /url: "#J2xidZNjJoYwTVx5cpcmTmloyNd"
+            - listitem [ref=e218]:
+              - link "1.7 Recommended Middleware Directions and Examples" [ref=e219]:
+                - /url: "#MOqxd5pR6ouBiBxd1m9m7tfIy5b"
+            - listitem [ref=e223]:
+              - 'link "Recommended Middleware Example: Identity and Authorization" [ref=e224]':
+                - /url: "#JgahdRffiootFlxnmrpmWH2nyTd"
+            - listitem [ref=e228]:
+              - 'link "Recommended Middleware Example: Trace, Audit, and Observability" [ref=e229]':
+                - /url: "#Wjoxd2qsXobmvgxPz1Imud27yJv"
+            - listitem [ref=e233]:
+              - 'link "Recommended Middleware Design Example: Layered Agent Architecture" [ref=e234]':
+                - /url: "#AL06d6LLhoUDnwxAgPpmk6uiyYe"
+            - listitem [ref=e238]:
+              - 'link "Recommended Middleware Example: Threat Modeling and Safety" [ref=e239]':
+                - /url: "#WezBdq3Wqom4ORxRGifmMJbSybd"
+            - listitem [ref=e243]:
+              - 'link "Recommended Middleware Example: Multi-Agent Coordination" [ref=e244]':
+                - /url: "#Pn22d8tEMolg4Txb0F8mDxbLySb"
+            - listitem [ref=e248]:
+              - link "Other Team-Designed Middleware" [ref=e249]:
+                - /url: "#UcxndzyWOodXCTxGfmYmW9Jzyhc"
+            - listitem [ref=e253]:
+              - link "1.8 Required Live Demo" [ref=e254]:
+                - /url: "#UPyPdy5stog82lxIjXamUyxRyVb"
+            - listitem [ref=e258]:
+              - link "1.9 Deliverables" [ref=e259]:
+                - /url: "#DfbAdnt0bo5NAjxrISJmkmhLy4e"
+            - listitem [ref=e263]:
+              - link "1.10 Core Acceptance Checklist and Optional Evidence" [ref=e264]:
+                - /url: "#NvBudiXocod0xSxblYQmB8RKyDb"
+            - listitem [ref=e268]:
+              - link "1.11 Evaluation Criteria" [ref=e269]:
+                - /url: "#TOr0dlWjsoqXSCxe4Jim6CHnyLg"
+            - listitem [ref=e273]:
+              - link "1.12 Scope Guidance and Frequently Asked Questions" [ref=e274]:
+                - /url: "#JTkmdejc4ot6tNxYhvhmzM34yLe"
+            - listitem [ref=e278]:
+              - link "2. Autonomous Machine Learning Research Agent for Recommender Systems" [ref=e279]:
+                - /url: "#Awozdl0mGo1DnXxwFuemYSilyzP"
+            - listitem [ref=e283]:
+              - link "2.1 Background" [ref=e284]:
+                - /url: "#YcI4dZGDFoLhAJxusQEm6eqtyvc"
+            - listitem [ref=e288]
+        - generic [ref=e291]:
+          - generic [ref=e300]:
+            - generic [ref=e301]:
+              - heading "💫 TikTok TechJam 2026 Information Document" [level=1] [ref=e303]:
+                - generic [ref=e304]: 💫
+                - generic [ref=e306]: TikTok TechJam 2026 Information Document
+              - generic [ref=e311]:
+                - generic [ref=e312]: "8924"
+                - generic [ref=e317]: "13424"
+            - generic [ref=e324]:
+              - generic [ref=e329]:
+                - text: "Note: This page is best viewed on desktop, and is accessible to the public via"
+                - link "bit.ly/TikTokTechJam2026Info" [ref=e332] [cursor=pointer]:
+                  - /url: http://bit.ly/TikTokTechJam2026Info
+                - text: . Please feel free to share this with anyone interested in TikTok TechJam 2026.
+              - generic [ref=e337]:
+                - generic [ref=e338]: 📢
+                - generic [ref=e348]:
+                  - text: "Be in the loop and get timely updates by joining our Telegram channel here:"
+                  - generic [ref=e349]: "@TikTokTechJam2026"
+              - generic [ref=e358]:
+                - generic [ref=e359]: 📌
+                - generic [ref=e364]:
+                  - generic [ref=e365]: "To successfully register for TikTok TechJam 2026, every individual must complete registration using BOTH links:"
+                  - generic [ref=e372]:
+                    - generic [ref=e373]: "1."
+                    - generic [ref=e376]:
+                      - generic [ref=e377]: Registration Form
+                      - link "https://bit.ly/TikTokTechJam2026Registration" [ref=e384] [cursor=pointer]:
+                        - /url: https://bit.ly/TikTokTechJam2026Registration
+                  - generic [ref=e387]:
+                    - generic [ref=e388]: "2."
+                    - generic [ref=e391]:
+                      - generic [ref=e392]: Devpost
+                      - link "https://tiktoktechjam2026.devpost.com/" [ref=e399] [cursor=pointer]:
+                        - /url: https://tiktoktechjam2026.devpost.com/
+                  - generic [ref=e400]: The official deadline for registrations is 1 Sep 2026, 12pm.
+              - img "飞书文档 - 图片" [ref=e413]
+          - generic [ref=e417]:
+            - generic [ref=e418]: 评论（0）
+            - generic [ref=e420] [cursor=pointer]
+          - button [ref=e428] [cursor=pointer]
+    - generic:
+      - generic:
+        - generic:
+          - menu:
+            - generic:
+              - generic:
+                - menuitem "帮助中心"
+              - generic:
+                - menuitem "快捷键"
+        - generic [ref=e434] [cursor=pointer]
+  - textbox [active] [ref=e439]

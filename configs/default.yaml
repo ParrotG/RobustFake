@@ -74,6 +74,10 @@ model:
   head_dim: 256
   projection_dim: 128
   dropout: 0.20
+  residual_enabled: true
+  residual_channels: 16
+  residual_embedding_dim: 64
+  residual_head_dim: 64
 
 loss:
   classification_weight: 1.0
@@ -104,3 +108,45 @@ output:
   root_dir: artifacts/runs
   save_last: true
   keep_best_only: false
+
+provenance:
+  max_files: 10000
+  c2pa_tool_path: null
+  c2pa_tool_timeout_seconds: 30.0
+  c2pa_remote_manifest_fetch: false
+  c2pa_ocsp_fetch: false
+  c2pa_verify_trust: true
+
+perspective:
+  max_dimension: 1600
+  canny_low_threshold: 50
+  canny_high_threshold: 150
+  hough_threshold: 50
+  hough_min_line_length_ratio: 0.12
+  hough_max_line_gap: 20
+  min_long_line_length_ratio: 0.15
+  similar_length_tolerance: 0.25
+  angle_deduplication_degrees: 8.0
+  max_lines: 24
+  intersection_cluster_ratio: 0.035
+  min_intersection_angle_degrees: 8.0
+  min_vanishing_point_support: 2
+  max_vanishing_distance_ratio: 4.0
+  strict_color_length_selection: true
+  strict_color_distance: 25.0
+  strict_length_tolerance: 0.35
+  strict_max_length_cv: 0.20
+  strict_anchor_x_ratio: 0.18
+  strict_anchor_y_ratio: 0.62
+  strict_angle_band_degrees: 35.0
+  parallel_angle_tolerance_degrees: 10.0
+  fisheye_min_contour_length_ratio: 0.20
+  fisheye_min_contour_elongation: 3.0
+  fisheye_min_span_ratio: 0.30
+  fisheye_max_curved_contour_count: 16
+  fisheye_min_support: 2
+  fisheye_min_angle_change_degrees: 18.0
+  fisheye_min_chord_excess: 0.035
+  fisheye_min_line_residual_ratio: 0.025
+  fisheye_score_threshold: 0.50
+  fisheye_curvature_threshold: 0.045

@@ -1,0 +1,45 @@
+{
+  "curvature": {
+    "contours": [
+      {
+        "arc_length": 3483.64,
+        "chord_excess": 0.356133,
+        "elongation": 8.25,
+        "line_residual_ratio": 0.034881,
+        "score": 0.812777,
+        "span": 754.467,
+        "tangent_change_degrees": 112.917
+      }
+    ],
+    "curved_contour_count": 1,
+    "curved_contour_fraction": 1.0,
+    "fisheye_evidence": false,
+    "long_contour_count": 1,
+    "score": 0.812777
+  },
+  "detection": {
+    "deduplicated_line_count": 9,
+    "length_cv": null,
+    "length_std": 0.0,
+    "lines": [],
+    "mean_length": 0.0,
+    "parallel_group_count": 0,
+    "parallel_groups": [],
+    "raw_line_count": 13,
+    "similar_length_line_count": 0
+  },
+  "image": {
+    "height": 1024,
+    "scale": 1.0,
+    "width": 1024
+  },
+  "intersections": {
+    "count": 0,
+    "points": []
+  },
+  "perspective": {
+    "reason": "At least three similar-length long lines are required.",
+    "relationship": "insufficient_evidence"
+  },
+  "schema_version": 1
+}
