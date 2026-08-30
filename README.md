@@ -35,52 +35,33 @@ The resulting feature feeds a binary classifier and a training-only contrastive 
 
 ### Training Dataset
 
-The first version uses [OwensLab/CommunityForensics-Small](https://huggingface.co/datasets/OwensLab/CommunityForensics-Small). Review the upstream dataset card and license before redistribution or commercial use.
+Training uses the gated [Shanmuk4622/ai-image-detection-dataset](https://huggingface.co/datasets/Shanmuk4622/ai-image-detection-dataset) at a pinned commit. It contains 10,000 real images, each linked by `source_real_id` to six generated images made from the same image-grounded caption. The dataset inherits non-commercial research restrictions from ImageNet and the individual generator licenses; review the upstream card before use or redistribution.
 
-The default prepared subset contains 20,000 original images:
+The preparer retains every real parent and deterministically selects one of its six generated partners. It preserves the upstream pair-level split:
 
 | Split | Real | Fake | Total |
 |---|---:|---:|---:|
-| Train | 8,000 | 8,000 | 16,000 |
-| Validation | 2,000 | 2,000 | 4,000 |
+| Train | 7,056 | 7,056 | 14,112 |
+| Validation | 1,446 | 1,446 | 2,892 |
+| Test | 1,498 | 1,498 | 2,996 |
 
-Fake samples are stratified by generator architecture:
+Within each split, generator assignment is seeded and balanced across SD 1.5, SDXL, FLUX Schnell, Kandinsky 2.2, PixArt Sigma, and Würstchen. Counts differ by at most one. Test records remain in the manifest but are not used by `aigc-train` or checkpoint selection.
 
-| Architecture group | Target share |
-|---|---:|
-| Latent diffusion (`LatDiff`) | 60% |
-| GAN | 15% |
-| Pixel-space diffusion (`PixDiff`) | 10% |
-| Other | 15% |
-
-Systematic generators are assigned to train or validation by a stable hash of `model_name` and are capped at six images per model. Manual and Commercial architectures contain too few generator identities to satisfy all per-split architecture quotas with generator-disjoint splitting, so they use a stable image-level split and a higher cap. Real sources are capped to prevent a single source from dominating a split.
-
-The preparation pipeline excludes:
-
-- NSFW records.
-- DALL-E/OpenAI generator sources reserved by the challenge policy.
-- Real sources containing `COCO`, as a conservative leakage guard.
-- Invalid labels, unsafe or corrupted images, exact SHA-256 duplicates, and identical perceptual hashes.
-
-Images keep their original encoding and resolution. The 224×224 conversion happens online during training, not during acquisition.
+All source images already share a canonical 512×512 RGB PNG pipeline. Acquisition verifies the declared dimensions, format, pipeline version, and SHA-256. Exact and perceptual duplicates are removed at the parent-pair level. Because the challenge forbids training on COCO val2017, preparation also compares COCO real images against the locally prepared official WildFake real subset using high-resolution perceptual hashes and removes the complete parent pair on a confirmed match.
 
 #### Bounded and resumable shard acquisition
 
-The repository contains 186 original Parquet shards totaling approximately 241.9GiB. Its Dataset Viewer conversion is marked partial and exposes only four converted shards, which are insufficient for the configured architecture quotas. The default `local_shards` mode therefore bypasses the partial conversion and pins nine original shards selected using metadata-only architecture/source scans.
+The image Parquet payload is approximately 24.5GB. Preparation first downloads the small metadata index, fixes the exact 20,000 selected IDs, and then scans pinned image shards with a bounded two-file prefetch queue. Only selected image bytes are retained long-term, typically around 7GB.
 
-The selected source shards total approximately 9.86GiB. Acquisition remains bounded by `max_shard_cache_gb`, `max_scanned`, and `max_download_gb`:
+`preparation_state.json`, `manifest.jsonl`, and `audit.json` are atomically checkpointed. The state records the config fingerprint, exact expected IDs, completed shards, and extracted IDs. Re-running resumes the first unfinished shard without relying on a mutable row offset. Finished files are removed only from the project-owned payload cache; the global Hugging Face cache is never deleted. Hub transport failures use exponential backoff.
 
-- `hf_hub_download` caches complete source shards and resumes interrupted file downloads.
-- PyArrow reads each completed shard locally without further image range requests.
-- Manifest and audit files are atomically checkpointed every 1,000 scanned rows.
-- Common Hub transport failures are retried with exponential backoff.
-- Re-running the same command reuses completed shards and resumes incomplete ones.
-- SHA-256 deduplication makes a replayed boundary row idempotent.
-- SIGTERM, SIGHUP, exceptions, and Ctrl-C preserve the latest recoverable state. SIGKILL and power loss fall back to the last periodic checkpoint.
+The dataset is gated. Accept its conditions on Hugging Face and run `hf auth login` before preparation. The token is read from the active user environment and is never printed or stored in project artifacts.
 
-The final dataset is accepted only after every class and architecture quota is satisfied.
+#### Label-independent standardization and nuisance audit
 
-`manifest.jsonl` is the source of truth for training. The number of files under `images/` may be larger after an interrupted run because unreferenced files are deliberately not deleted automatically.
+Before spatial views are generated, both classes pass through the same optional random standardizer. It conservatively samples a resize round trip, a JPEG/WebP re-encode, or both. The standardized base image is shared by clean and degraded branches. Training draws are stochastic; validation, test, and official evaluation use a seed derived from the record ID.
+
+After successful preparation, a lightweight `HistGradientBoostingClassifier` attempts to predict the label from fixed pixel statistics such as colour moments, entropy, sharpness, blockiness, edges, and frequency-band energy. `nuisance_report.json` compares raw canonical images with deterministic standardized images and reports validation/test AUROC, AP, balanced accuracy, F1, confusion matrices, per-generator results, and feature importance. This report is informational and never blocks training; high low-level separability can represent either an unwanted shortcut or a genuine generator fingerprint.
 
 ### Paired Robust Training
 
@@ -119,7 +100,7 @@ Default optimization uses AdamW, cosine decay after 10% linear warmup, FP16 auto
 
 ### Validation and Evaluation
 
-Validation transforms are seeded from the project seed and record ID, making metrics comparable across runs. Systematic fake generators are disjoint between training and validation; Manual generators are shared because that subset has too few identities to satisfy all architecture quotas.
+Validation transforms are seeded from the project seed and record ID, making metrics comparable across runs. Parent pairs never cross train, validation, or test splits.
 
 Every epoch reports metrics separately for clean and degraded validation inputs:
 
@@ -151,9 +132,10 @@ All runtime parameters are centralized in [configs/default.yaml](configs/default
 
 ## Dataset Preparation
 
-Authenticate once if a Hugging Face token is available:
+First prepare the prescribed WildFake subset used by the leakage audit, then accept the gated training dataset terms and authenticate:
 
 ```bash
+uv run aigc-prepare-official-eval --config configs/default.yaml
 hf auth login
 ```
 
@@ -161,27 +143,25 @@ Prepare or resume the default subset:
 
 ```bash
 uv run aigc-prepare \
-  --config configs/default.yaml \
-  --set data.hf_auth=required
+  --config configs/default.yaml
 ```
 
-`data.hf_auth` supports `auto`, `required`, and `disabled`. Tokens are read from the active user environment and are never stored in the project configuration or logs.
+`data.hf_auth` defaults to `required`. Tokens are read from the active user environment and are never stored in the project configuration or logs.
 
-A successful run must produce an audit with `complete: true` and a 20,000-line manifest. Verify both before training:
+A successful run produces `complete: true`. The manifest contains at most 20,000 records because any confirmed COCO val2017 overlap is removed as a complete real/fake pair:
 
 ```bash
-uv run python -c "import json; a=json.load(open('data/processed/community_forensics_20k/audit.json')); assert a['complete']; assert a['selected'] == 20000; print('Dataset is ready')"
+uv run python -c "import json; a=json.load(open('data/processed/ai_image_detection_20k/audit.json')); assert a['complete']; print(a['selected'], 'safe images')"
 
-wc -l data/processed/community_forensics_20k/manifest.jsonl
+wc -l data/processed/ai_image_detection_20k/manifest.jsonl
 ```
 
-If the configured scan limit is reached before all architecture quotas are filled, preserve the existing files and increase only the bound:
+If disk space is constrained, lower download concurrency so fewer complete source shards coexist in the project cache:
 
 ```bash
 uv run aigc-prepare \
   --config configs/default.yaml \
-  --set data.hf_auth=required \
-  --set data.max_scanned=250000
+  --set data.download_workers=1
 ```
 
 ## Training
@@ -232,10 +212,12 @@ The default matrix contains JPEG quality 90/70/50/30, Gaussian blur sigma 0.5/1.
 ## Outputs
 
 ```text
-data/processed/community_forensics_20k/
-├── images/                 Original selected image files
-├── manifest.jsonl          Idempotent training manifest
-└── audit.json              Quotas, filters, revision, and preparation checkpoint
+data/processed/ai_image_detection_20k/
+├── images/                 Canonical selected image files
+├── manifest.jsonl          Idempotent paired manifest
+├── preparation_state.json  Exact resumable shard and ID state
+├── nuisance_report.json    Informational low-level bias probe
+└── audit.json              Revision, split counts, exclusions, and completion
 
 artifacts/runs/clip_b16_multiview/
 ├── best.pt                 Best trainable-head checkpoint
@@ -263,13 +245,13 @@ Run the offline unit and CPU smoke tests:
 uv run pytest
 ```
 
-The suite covers strict configuration validation, sampling quotas and exclusions, interruption recovery, deterministic transforms, view-order invariance, frozen-backbone gradients, finite losses, metrics, checkpoint creation, and training resume.
+The suite covers strict configuration validation, paired generator selection, leakage exclusion, resumable checkpoints, nuisance probing, deterministic standardization, view-order invariance, frozen-backbone gradients, finite losses, metrics, checkpoint creation, and training resume.
 
 ## Known Limitations
 
 - The current model uses only semantic CLIP features; no residual, frequency-domain, or camera-pipeline branch is implemented.
-- CommunityForensics contains many related Stable Diffusion derivatives, so generator-level separation is stronger than random image splitting but weaker than evaluation on an independent generator family.
-- Perceptual deduplication removes identical pHashes but does not perform expensive global near-neighbor search.
+- The paired set covers six text-to-image generators but not image-to-image, editing, or the unseen DALL-E family used by the external benchmark.
+- The nuisance probe is diagnostic; it cannot by itself distinguish a harmful acquisition shortcut from a real synthesis fingerprint.
 - A binary detector is not proof of image authenticity. Operational use requires calibration, uncertainty handling, and explicit control of false positives on real images.
 - The project does not yet provide the final directory inference and JSON submission command.
 

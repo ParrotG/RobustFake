@@ -43,6 +43,7 @@ class RobustPairTransform:
 
     def __init__(self, config: AppConfig) -> None:
         self.views = config.views
+        self.standardization = config.standardization
         self.augment = config.augmentations
         self.seed = config.project.seed
 
@@ -82,6 +83,58 @@ class RobustPairTransform:
         buffer.seek(0)
         with Image.open(buffer) as decoded:
             return decoded.convert("RGB").copy()
+
+    def _standardize_resize(self, image: Image.Image, rng: random.Random) -> Image.Image:
+        scale = rng.uniform(
+            self.standardization.resize_scale_min,
+            self.standardization.resize_scale_max,
+        )
+        width, height = image.size
+        interpolation = self._interpolation(rng)
+        reduced = image.resize(
+            (max(1, round(width * scale)), max(1, round(height * scale))),
+            resample=interpolation,
+        )
+        return reduced.resize((width, height), resample=interpolation)
+
+    def _standardize_codec(self, image: Image.Image, rng: random.Random) -> Image.Image:
+        quality = rng.randint(
+            self.standardization.quality_min,
+            self.standardization.quality_max,
+        )
+        codec = rng.choices(
+            ["JPEG", "WEBP"],
+            weights=[
+                self.standardization.jpeg_weight,
+                self.standardization.webp_weight,
+            ],
+            k=1,
+        )[0]
+        options: dict[str, object] = {"quality": quality}
+        if codec == "JPEG":
+            options["subsampling"] = 2
+        return self._encode(image, codec, **options)
+
+    def standardize(self, image: Image.Image, rng: random.Random) -> Image.Image:
+        """Apply conservative image-only random standardization before view creation."""
+        if not self.standardization.enabled:
+            return image
+        if rng.random() >= self.standardization.application_probability:
+            return image
+        mode = rng.choices(
+            ["resize", "codec", "resize_codec"],
+            weights=[
+                self.standardization.resize_weight,
+                self.standardization.codec_weight,
+                self.standardization.resize_codec_weight,
+            ],
+            k=1,
+        )[0]
+        if mode in {"resize", "resize_codec"}:
+            image = self._standardize_resize(image, rng)
+        if mode in {"codec", "resize_codec"}:
+            image = self._standardize_codec(image, rng)
+        return image
 
     def _jpeg(self, image: Image.Image, rng: random.Random) -> Image.Image:
         quality = rng.randint(self.augment.jpeg_quality_min, self.augment.jpeg_quality_max)
@@ -184,6 +237,7 @@ class RobustPairTransform:
     def __call__(self, image: Image.Image, *, seed: int | None = None) -> dict[str, torch.Tensor]:
         rng = random.Random(seed) if seed is not None else random.Random(random.getrandbits(64))
         image = canonical_rgb(image, self.views.padding_color)
+        image = self.standardize(image, rng)
         global_geometry, local_geometry = self._geometries(image, rng)
         transformed = self._degrade(image.copy(), rng)
         clean_views = torch.stack(

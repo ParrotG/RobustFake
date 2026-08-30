@@ -135,6 +135,7 @@ class OfficialEvaluationDataset(Dataset[dict[str, Any]]):
         ).hexdigest()
         rng = random.Random(int(seed_digest[:16], 16))
         image = canonical_rgb(image, self.config.views.padding_color)
+        image = self.transform.standardize(image, rng)
         global_geometry, local_geometry = self.transform._geometries(image, rng)
         transformed = _scenario_image(image.copy(), self.scenario, rng)
         views = torch.stack(

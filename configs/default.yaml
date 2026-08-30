@@ -3,42 +3,64 @@ project:
   run_name: clip_b16_multiview
 
 data:
-  repo_id: OwensLab/CommunityForensics-Small
-  revision: 6c539a534c07917307c381f5af4053c6091b5278
-  shard_cache_dir: data/cache/community_forensics_shards
-  shard_indices: [68, 70, 77, 78, 83, 115, 116, 156, 157]
-  max_shard_cache_gb: 12.0
-  output_dir: data/processed/community_forensics_20k
-  manifest_path: data/processed/community_forensics_20k/manifest.jsonl
-  audit_path: data/processed/community_forensics_20k/audit.json
-  hf_auth: auto
-  max_scanned: 150000
-  checkpoint_every_scanned: 1000
+  repo_id: Shanmuk4622/ai-image-detection-dataset
+  revision: 8f1f536676f96cbc58bffd520ed50d1e7b9e894a
+  metadata_file: metadata/manifest.parquet
+  source_config_file: metadata/config.json
+  shard_cache_dir: data/cache/ai_image_detection_shards
+  output_dir: data/processed/ai_image_detection_20k
+  manifest_path: data/processed/ai_image_detection_20k/manifest.jsonl
+  audit_path: data/processed/ai_image_detection_20k/audit.json
+  state_path: data/processed/ai_image_detection_20k/preparation_state.json
+  nuisance_report_path: data/processed/ai_image_detection_20k/nuisance_report.json
+  hf_auth: required
+  generators:
+    - sd15
+    - sdxl
+    - flux_schnell
+    - kandinsky22
+    - pixart_sigma
+    - wuerstchen
+  expected_parent_count: 10000
+  expected_pipeline_version: "1.2"
+  expected_image_size: 512
+  download_workers: 2
+  checkpoint_every_shards: 10
   network_max_retries: 5
   network_retry_base_seconds: 5.0
-  max_download_gb: 22.0
+  max_download_gb: 28.0
+  max_shard_cache_gb: 3.0
   max_image_pixels: 50000000
-  train_per_class: 8000
-  val_per_class: 2000
-  train_generator_percent: 80
-  architecture_ratios:
-    LatDiff: 0.60
-    GAN: 0.15
-    PixDiff: 0.10
-    other: 0.15
-  systematic_per_model_cap: 6
-  non_systematic_per_model_cap: 2000
-  max_real_source_fraction: 0.70
-  exclude_nsfw: true
-  excluded_generator_tokens:
-    - dall-e
-    - dalle
-    - openai
-  excluded_real_source_tokens:
-    - coco
   exact_deduplication: true
   perceptual_deduplication: true
-  perceptual_hash_size: 8
+  perceptual_hash_size: 16
+  official_leakage_manifest: data/evaluation/wildfake_official/manifest.jsonl
+  official_leakage_root: data/evaluation/wildfake_official
+  leakage_phash_distance: 8
+  leakage_dhash_distance: 8
+
+standardization:
+  enabled: true
+  application_probability: 0.75
+  resize_weight: 0.30
+  codec_weight: 0.30
+  resize_codec_weight: 0.40
+  resize_scale_min: 0.75
+  resize_scale_max: 1.0
+  jpeg_weight: 0.80
+  webp_weight: 0.20
+  quality_min: 85
+  quality_max: 100
+
+nuisance_audit:
+  enabled: true
+  random_state: 2026
+  feature_size: 128
+  max_iter: 150
+  learning_rate: 0.08
+  max_leaf_nodes: 15
+  min_samples_leaf: 20
+  permutation_repeats: 5
 
 views:
   input_size: 224
