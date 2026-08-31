@@ -134,6 +134,18 @@ uv run aigc-watermark --config configs/default.yaml /path/to/image-or-directory
 
 The provenance command includes the same result under each record's `watermark` field. Visible marks are provenance hints rather than signatures: they can be cropped, copied, or added after generation, so their absence does not prove an image is real.
 
+### Residual degradation diagnosis and restoration
+
+The standalone `aigc-restore-degradation` utility reuses the fixed Laplacian and Sobel residual filters already present in the project. It reports evidence for Gaussian blur, Gaussian noise, resize/resampling artifacts, and color jitter, then applies only conservative denoising, unsharp restoration, and color balancing for the detected cases. It does not load or modify CLIP weights, model heads, or training code.
+
+```bash
+uv run aigc-restore-degradation \
+  --input /Users/furnace/Downloads/13.png \
+  --output-dir /Users/furnace/Downloads/degradation_restore_examples
+```
+
+Each input produces a restored PNG, a fixed-residual diagnostic panel, and a JSON report containing raw metrics, per-artifact confidence, detected degradations, and applied operations. Restoration is heuristic and cannot reconstruct information destroyed by severe blur or resampling.
+
 ## Installation
 
 Requirements:
