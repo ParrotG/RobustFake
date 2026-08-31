@@ -1,8 +1,8 @@
-# 项目说明：Transformation-Robust AIGC Recognizer
+# 项目说明：RobustFake
 
 ## 1. 目标与边界
 
-本项目针对图片级 AIGC 检测，重点是在未见生成器以及真实传播变换下保持稳定。当前版本覆盖训练集分片获取、数据审计、双视图数据管道、模型、训练、验证、断点恢复和比赛要求的目录到 JSON 推理入口，并提供默认关闭的实验性 Residual Statistics Branch。
+RobustFake 针对图片级 AIGC 检测，重点是在未见生成器以及真实传播变换下保持稳定。项目覆盖训练集分片获取、数据审计、双视图数据管道、模型、训练、验证、断点恢复、校准和比赛要求的目录到 JSON 推理入口；发布模型启用 Residual Statistics Branch。
 
 默认模型远低于题目要求的 2B 参数上限。CLIP 主干完全冻结，实际训练参数不超过约 5M，适合 8–12GB NVIDIA GPU。
 
@@ -23,7 +23,7 @@
 
 训练额外包含 projection head，只用于监督式对比损失。
 
-可选 Residual Statistics Branch 从每个归一化视图提取 24 维固定高通统计，包括方向残差矩、逐通道 Laplacian 统计和水平/垂直相邻像素差。两个视图的 mean/std 经小型 MLP 后与 CLIP 聚合特征拼接。该分支默认关闭，确保旧 checkpoint 兼容；其统计量可在现有 CLIP feature cache 上另建 sidecar，不需要重新计算 backbone embedding。
+Residual Statistics Branch 从每个归一化视图提取 24 维固定高通统计，包括方向残差矩、逐通道 Laplacian 统计和水平/垂直相邻像素差。两个视图的 mean/std 经小型 MLP 后与 CLIP 聚合特征拼接。其统计量可在现有 CLIP feature cache 上另建 sidecar，不需要重新计算 backbone embedding。
 
 ### 2.3 成对鲁棒训练
 
@@ -98,6 +98,7 @@ WildFake 通过 metadata-first 和并行 ZIP HTTP Range 获取；两个 Hugging 
 - `training`：epoch、micro-batch、梯度累积、DataLoader 预取、AMP、优化器和恢复路径。
 - `output`：运行产物目录和 checkpoint 策略。
 - `feature_cache`：缓存根目录、训练变体数、FP16/FP32、分片、batch 和预取设置。
+- `evaluation`：本地或 Hugging Face checkpoint、校准阈值策略、外部特征缓存和评测场景。
 
 CLI 只额外支持 `--set section.key=value`。未知 section、未知 key、错误概率和不支持的 backbone 会在下载或加载权重前报错。
 
@@ -153,15 +154,20 @@ uv run aigc-evaluate-official --config configs/default.yaml
 ```
 
 正式外部评测前，可在内部 `val_id`/`val_dg` 的 clean/transformed 预测上拟合一次
-checkpoint-bound affine Platt 校准。存在兼容训练特征缓存时只运行检测头，不重新计算
-CLIP；输出默认写在 checkpoint 同目录，外部评测和目录推理会校验 checkpoint SHA-256
-后自动应用：
+checkpoint-bound affine Platt 校准。阈值选择分别计算 ID/DG clean/transformed 四组
+Balanced Accuracy，在限制 clean macro 退化的候选中优先最大化最差组，再以 macro
+表现打破平局。存在兼容训练特征缓存时只运行检测头，不重新计算 CLIP；输出默认写在
+checkpoint 同目录，外部评测和目录推理会校验 checkpoint SHA-256 后自动应用：
 
 ```bash
 uv run aigc-calibrate \
-  --config artifacts/runs/clip_b16_multilayer_v3/resolved_config.yaml \
-  --checkpoint artifacts/runs/clip_b16_multilayer_v3/best.pt
+  --config artifacts/runs/your_run/resolved_config.yaml \
+  --checkpoint artifacts/runs/your_run/best.pt
 ```
+
+发布 checkpoint 与校准可从 `Gin123/RobustFake` 的同一 Hugging Face snapshot 自动下载。
+目录推理和三个统一评测入口均支持 `--hf-repo`/`--hf-revision`；显式本地
+`--checkpoint` 仍然优先用于本地实验。
 
 WildFake 仓库整体约 1.2TB，而 DALL·E ZIP 约 25.6GB。准备命令校验上游 archive SHA-256，并通过 ZIP HTTP Range 只提取题目指定成员，实际选择图片约 2.93GB；下载中断后根据原子 manifest 继续。若上游 archive 身份或官方元数据数量不再是 real 4,998/fake 8,843，命令会拒绝评测。
 
@@ -207,4 +213,4 @@ final/intermediate/residual features；同架构的新 checkpoint 可直接复�
 - nuisance classifier 只能证明低层统计可分，不能自动判断信号是采集偏置还是有意义的生成器指纹。
 - COCO val2017 泄漏审计依赖感知哈希，对极端裁剪或重绘版本不能提供密码学意义的无重叠证明。
 - 被动检测器不能作为真实性证明，实际应用必须表达不确定性并控制真实图片误报。
-- 后续版本仍需加入阈值校准和生成器留一实验，并通过受控消融决定是否启用 Residual Statistics Branch。
+- 生成器留一与更细粒度的 degradation-aware correction 仍需额外受控实验。

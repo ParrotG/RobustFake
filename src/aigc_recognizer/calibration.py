@@ -97,7 +97,7 @@ def load_global_calibrator(
         return None
     payload = json.loads(path.read_text(encoding="utf-8"))
     required = {"coefficient", "intercept", "threshold", "checkpoint_sha256"}
-    if payload.get("schema_version") != 1 or not required <= set(payload):
+    if payload.get("schema_version") not in {1, 2} or not required <= set(payload):
         raise RuntimeError(f"Calibration file has an unsupported schema: {path}")
     actual_sha256 = checkpoint_sha256 or _file_sha256(Path(checkpoint_path))
     if payload["checkpoint_sha256"] != actual_sha256:
@@ -143,9 +143,10 @@ def _validation_loaders(config: AppConfig) -> tuple[list[DataLoader[Any]], bool]
 @torch.inference_mode()
 def _collect_logits(
     model: Any, loaders: list[DataLoader[Any]], device: torch.device
-) -> tuple[np.ndarray, np.ndarray, dict[str, int]]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, int]]:
     logits: list[float] = []
     labels: list[float] = []
+    groups: list[str] = []
     counts: dict[str, int] = {}
     for split, loader in zip(("val_id", "val_dg"), loaders):
         split_count = 0
@@ -155,16 +156,96 @@ def _collect_logits(
             batch_size = targets.numel()
             logits.extend(clean_output.logits.float().cpu().tolist())
             labels.extend(targets.float().cpu().tolist())
+            groups.extend([f"{split}_clean"] * batch_size)
             logits.extend(transformed_output.logits.float().cpu().tolist())
             labels.extend(targets.float().cpu().tolist())
+            groups.extend([f"{split}_transformed"] * batch_size)
             split_count += batch_size
         counts[f"{split}_base_images"] = split_count
         counts[f"{split}_predictions"] = split_count * 2
     return (
         np.asarray(logits, dtype=np.float64),
         np.asarray(labels, dtype=np.int64),
+        np.asarray(groups),
         counts,
     )
+
+
+def _balanced_accuracy_curve(
+    probabilities: np.ndarray, labels: np.ndarray, thresholds: np.ndarray
+) -> np.ndarray:
+    """Evaluate balanced accuracy at many thresholds without a dense score matrix."""
+    order = np.argsort(probabilities, kind="stable")
+    sorted_probabilities = probabilities[order]
+    sorted_labels = labels[order]
+    positive_prefix = np.concatenate(([0], np.cumsum(sorted_labels, dtype=np.int64)))
+    indices = np.searchsorted(sorted_probabilities, thresholds, side="left")
+    positives = int(positive_prefix[-1])
+    negatives = int(labels.size - positives)
+    if positives == 0 or negatives == 0:
+        raise RuntimeError("Every calibration threshold group must contain both labels.")
+    true_positive = positives - positive_prefix[indices]
+    true_negative = indices - positive_prefix[indices]
+    return 0.5 * (true_positive / positives + true_negative / negatives)
+
+
+def _select_robust_threshold(
+    probabilities: np.ndarray,
+    labels: np.ndarray,
+    groups: np.ndarray,
+    *,
+    max_clean_drop: float,
+) -> tuple[float, dict[str, Any]]:
+    """Select a minimax group threshold while protecting clean validation accuracy."""
+    thresholds = np.unique(
+        np.concatenate(
+            (
+                probabilities,
+                np.asarray([0.0, 0.5, 1.0], dtype=np.float64),
+            )
+        )
+    )
+    group_names = sorted(str(item) for item in np.unique(groups))
+    curves = np.stack(
+        [
+            _balanced_accuracy_curve(
+                probabilities[groups == group], labels[groups == group], thresholds
+            )
+            for group in group_names
+        ]
+    )
+    clean_indices = [index for index, name in enumerate(group_names) if name.endswith("_clean")]
+    if not clean_indices:
+        raise RuntimeError("Robust threshold selection requires at least one clean group.")
+    clean_curve = curves[clean_indices].mean(axis=0)
+    clean_best = float(clean_curve.max())
+    eligible = clean_curve >= clean_best - max_clean_drop - 1e-12
+    worst_group = curves.min(axis=0)
+    macro = curves.mean(axis=0)
+    candidate_indices = np.flatnonzero(eligible)
+    # Prefer worst-group performance, then macro performance, then the threshold
+    # closest to 0.5 for deterministic resolution of exact ties.
+    ranking = np.lexsort(
+        (
+            np.abs(thresholds[candidate_indices] - 0.5),
+            -macro[candidate_indices],
+            -worst_group[candidate_indices],
+        )
+    )
+    selected_index = int(candidate_indices[ranking[0]])
+    selected_group_metrics = {
+        name: float(curves[index, selected_index])
+        for index, name in enumerate(group_names)
+    }
+    return float(thresholds[selected_index]), {
+        "strategy": "constrained_minimax",
+        "max_clean_balanced_accuracy_drop": max_clean_drop,
+        "best_clean_macro_balanced_accuracy": clean_best,
+        "selected_clean_macro_balanced_accuracy": float(clean_curve[selected_index]),
+        "selected_macro_balanced_accuracy": float(macro[selected_index]),
+        "selected_worst_group_balanced_accuracy": float(worst_group[selected_index]),
+        "selected_group_balanced_accuracy": selected_group_metrics,
+    }
 
 
 def fit_global_calibration(
@@ -183,7 +264,7 @@ def fit_global_calibration(
     model = create_cached_detector(config.model) if cached else create_detector(config.model)
     model.load_trainable_state_dict(checkpoint["trainable_model"])
     model.to(device).eval()
-    raw_logits, labels, counts = _collect_logits(model, loaders, device)
+    raw_logits, labels, groups, counts = _collect_logits(model, loaders, device)
 
     estimator = LogisticRegression(C=1.0, solver="lbfgs", max_iter=1_000)
     estimator.fit(raw_logits.reshape(-1, 1), labels)
@@ -192,22 +273,35 @@ def fit_global_calibration(
     if coefficient <= 0:
         raise RuntimeError("Fitted calibration reverses the detector ordering.")
     calibrated = 1.0 / (1.0 + np.exp(-(coefficient * raw_logits + intercept)))
-    false_positive_rate, true_positive_rate, thresholds = roc_curve(labels, calibrated)
-    balanced = 0.5 * (true_positive_rate + 1.0 - false_positive_rate)
-    finite = np.isfinite(thresholds)
-    best_index = int(np.flatnonzero(finite)[np.argmax(balanced[finite])])
-    threshold = float(thresholds[best_index])
+    if config.evaluation.calibration_threshold_strategy == "constrained_minimax":
+        threshold, threshold_selection = _select_robust_threshold(
+            calibrated,
+            labels,
+            groups,
+            max_clean_drop=config.evaluation.calibration_max_clean_ba_drop,
+        )
+    else:
+        false_positive_rate, true_positive_rate, thresholds = roc_curve(labels, calibrated)
+        balanced = 0.5 * (true_positive_rate + 1.0 - false_positive_rate)
+        finite = np.isfinite(thresholds)
+        best_index = int(np.flatnonzero(finite)[np.argmax(balanced[finite])])
+        threshold = float(thresholds[best_index])
+        threshold_selection = {
+            "strategy": "pooled_balanced_accuracy",
+            "selected_pooled_balanced_accuracy": float(balanced[best_index]),
+        }
     raw_probabilities = 1.0 / (1.0 + np.exp(-raw_logits))
     checkpoint_sha256 = _file_sha256(selected_checkpoint)
     destination = Path(output_path) if output_path else calibration_path(config, selected_checkpoint)
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "method": "affine_platt",
         "checkpoint_path": str(selected_checkpoint),
         "checkpoint_sha256": checkpoint_sha256,
         "coefficient": coefficient,
         "intercept": intercept,
         "threshold": threshold,
+        "threshold_selection": threshold_selection,
         "fit_counts": counts,
         "feature_cache_used": cached,
         "raw_metrics_at_0_5": binary_metrics(labels, raw_probabilities, 0.5),

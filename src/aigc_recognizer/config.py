@@ -331,12 +331,18 @@ class OfficialEvaluationConfig:
 class EvaluationConfig:
     """Settings shared by every manifest-backed external evaluation."""
 
-    checkpoint_path: str = "artifacts/runs/clip_b16_multilayer_v3/best.pt"
+    checkpoint_path: str = "artifacts/models/robustfake/best.pt"
     batch_size: int = 32
     num_workers: int = 8
     prefetch_factor: int = 2
     save_predictions: bool = True
     calibration_path: str | None = None
+    calibration_threshold_strategy: str = "constrained_minimax"
+    calibration_max_clean_ba_drop: float = 0.005
+    hf_model_repo_id: str | None = "Gin123/RobustFake"
+    hf_model_revision: str = "main"
+    hf_checkpoint_filename: str = "best.pt"
+    hf_calibration_filename: str = "calibration.json"
     external_feature_cache_enabled: bool = True
     external_feature_cache_dir: str = "data/processed/external_feature_cache"
     external_feature_cache_dtype: str = "float16"
@@ -751,6 +757,17 @@ class AppConfig:
             raise ConfigError("External evaluation loader settings are invalid.")
         if evaluation.prefetch_factor <= 0:
             raise ConfigError("External evaluation prefetch factor must be positive.")
+        if evaluation.calibration_threshold_strategy not in {
+            "pooled_balanced_accuracy",
+            "constrained_minimax",
+        }:
+            raise ConfigError("Unsupported calibration threshold strategy.")
+        if not 0 <= evaluation.calibration_max_clean_ba_drop <= 1:
+            raise ConfigError("Calibration clean balanced-accuracy drop must be in [0, 1].")
+        if not evaluation.hf_model_revision:
+            raise ConfigError("Hugging Face model revision must not be empty.")
+        if not evaluation.hf_checkpoint_filename or not evaluation.hf_calibration_filename:
+            raise ConfigError("Hugging Face model filenames must not be empty.")
         if evaluation.external_feature_cache_dtype not in {"float16", "float32"}:
             raise ConfigError(
                 "evaluation.external_feature_cache_dtype must be float16 or float32."

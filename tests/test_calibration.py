@@ -4,7 +4,9 @@ from pathlib import Path
 import pytest
 import torch
 
-from aigc_recognizer.calibration import load_global_calibrator
+import numpy as np
+
+from aigc_recognizer.calibration import _select_robust_threshold, load_global_calibrator
 from aigc_recognizer.config import load_config
 
 
@@ -53,3 +55,33 @@ def test_absent_automatic_calibration_is_optional(tmp_path: Path) -> None:
     config = load_config(DEFAULT_CONFIG)
 
     assert load_global_calibrator(config, checkpoint) is None
+
+
+def test_robust_threshold_protects_clean_groups_and_improves_worst_group() -> None:
+    probabilities = np.asarray(
+        [
+            0.10, 0.20, 0.60, 0.70,
+            0.15, 0.25, 0.65, 0.75,
+            0.40, 0.55, 0.70, 0.80,
+            0.45, 0.60, 0.75, 0.85,
+        ]
+    )
+    labels = np.tile(np.asarray([0, 0, 1, 1]), 4)
+    groups = np.repeat(
+        np.asarray(["val_id_clean", "val_dg_clean", "val_id_transformed", "val_dg_transformed"]),
+        4,
+    )
+
+    threshold, diagnostics = _select_robust_threshold(
+        probabilities, labels, groups, max_clean_drop=0.0
+    )
+
+    assert 0.25 < threshold <= 0.60
+    assert diagnostics["strategy"] == "constrained_minimax"
+    assert diagnostics["selected_clean_macro_balanced_accuracy"] == pytest.approx(1.0)
+    assert set(diagnostics["selected_group_balanced_accuracy"]) == {
+        "val_id_clean",
+        "val_dg_clean",
+        "val_id_transformed",
+        "val_dg_transformed",
+    }

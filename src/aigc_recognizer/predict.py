@@ -25,6 +25,7 @@ from aigc_recognizer.config import (
     load_config,
 )
 from aigc_recognizer.data.transforms import RobustPairTransform, canonical_rgb
+from aigc_recognizer.hub import resolve_inference_checkpoint
 from aigc_recognizer.model import FrozenClipDetector, create_detector
 from aigc_recognizer.train import resolve_device
 from aigc_recognizer.utils import seed_everything, seed_worker
@@ -133,6 +134,8 @@ def predict_directory(
     output_json: str | Path,
     *,
     checkpoint_path: str | Path | None = None,
+    hf_repo_id: str | None = None,
+    hf_revision: str | None = None,
     recursive: bool = True,
     model: FrozenClipDetector | None = None,
 ) -> list[dict[str, Any]]:
@@ -143,8 +146,11 @@ def predict_directory(
     device = resolve_device(config)
     calibrator: GlobalCalibrator | None = None
     if model is None:
-        selected_checkpoint = Path(
-            checkpoint_path or config.evaluation.checkpoint_path
+        selected_checkpoint = resolve_inference_checkpoint(
+            config,
+            checkpoint_path,
+            hf_repo_id=hf_repo_id,
+            hf_revision=hf_revision,
         )
         config, checkpoint = load_inference_checkpoint(
             config, selected_checkpoint
@@ -195,10 +201,21 @@ def main() -> None:
     )
     parser.add_argument("--input-dir", required=True, help="Directory containing images.")
     parser.add_argument("--output-json", required=True, help="Destination JSON file.")
-    parser.add_argument(
+    model_source = parser.add_mutually_exclusive_group()
+    model_source.add_argument(
         "--checkpoint",
         default=None,
         help="Detector checkpoint. Defaults to evaluation.checkpoint_path.",
+    )
+    model_source.add_argument(
+        "--hf-repo",
+        default=None,
+        help="Download a checkpoint-bound model package from this Hugging Face repository.",
+    )
+    parser.add_argument(
+        "--hf-revision",
+        default=None,
+        help="Immutable Hugging Face revision or branch. Defaults to the configuration.",
     )
     parser.add_argument(
         "--no-recursive",
@@ -212,6 +229,8 @@ def main() -> None:
         arguments.input_dir,
         arguments.output_json,
         checkpoint_path=arguments.checkpoint,
+        hf_repo_id=arguments.hf_repo,
+        hf_revision=arguments.hf_revision,
         recursive=not arguments.no_recursive,
     )
     LOGGER.info(

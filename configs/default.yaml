@@ -246,12 +246,18 @@ official_evaluation:
   network_max_retries: 5
   network_retry_backoff: 1.0
 evaluation:
-  checkpoint_path: artifacts/runs/clip_b16_multilayer_v3/best.pt
+  checkpoint_path: artifacts/models/robustfake/best.pt
   batch_size: 32
   num_workers: 8
   prefetch_factor: 2
   save_predictions: true
   calibration_path: null
+  calibration_threshold_strategy: constrained_minimax
+  calibration_max_clean_ba_drop: 0.005
+  hf_model_repo_id: Gin123/RobustFake
+  hf_model_revision: main
+  hf_checkpoint_filename: best.pt
+  hf_calibration_filename: calibration.json
   external_feature_cache_enabled: true
   external_feature_cache_dir: data/processed/external_feature_cache
   external_feature_cache_dtype: float16

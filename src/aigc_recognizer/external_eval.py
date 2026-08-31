@@ -27,6 +27,7 @@ from aigc_recognizer.calibration import GlobalCalibrator, load_global_calibrator
 from aigc_recognizer.config import AppConfig, config_argument_parser, load_config
 from aigc_recognizer.data.transforms import RobustPairTransform, canonical_rgb
 from aigc_recognizer.metrics import binary_metrics
+from aigc_recognizer.hub import resolve_inference_checkpoint
 from aigc_recognizer.model import EncodedViews, FrozenClipDetector, create_detector
 from aigc_recognizer.train import resolve_device
 from aigc_recognizer.utils import atomic_torch_save, seed_everything, seed_worker
@@ -553,7 +554,15 @@ def _evaluate_scenario(
     return metrics, predictions
 
 
-def evaluate_external(config: AppConfig, name: str, *, fast: bool = False) -> dict[str, Any]:
+def evaluate_external(
+    config: AppConfig,
+    name: str,
+    *,
+    fast: bool = False,
+    checkpoint_path: str | Path | None = None,
+    hf_repo_id: str | None = None,
+    hf_revision: str | None = None,
+) -> dict[str, Any]:
     """Evaluate one prepared manifest without dataset-specific inference logic."""
     spec = dataset_spec(config, name)
     audit_path = Path(spec.audit_path)
@@ -566,7 +575,12 @@ def evaluate_external(config: AppConfig, name: str, *, fast: bool = False) -> di
     if audit.get("counts") != expected_counts:
         raise RuntimeError("External evaluation audit count does not match the configuration.")
 
-    checkpoint_path = Path(config.evaluation.checkpoint_path)
+    checkpoint_path = resolve_inference_checkpoint(
+        config,
+        checkpoint_path,
+        hf_repo_id=hf_repo_id,
+        hf_revision=hf_revision,
+    )
     device = resolve_device(config)
     config, checkpoint = load_inference_checkpoint(config, checkpoint_path)
     model = create_detector(config.model)
@@ -688,8 +702,27 @@ def _main(name: str, description: str) -> None:
         action="store_true",
         help="Evaluate a deterministic balanced subset on representative severe scenarios.",
     )
+    model_source = parser.add_mutually_exclusive_group()
+    model_source.add_argument("--checkpoint", default=None, help="Local checkpoint override.")
+    model_source.add_argument(
+        "--hf-repo",
+        default=None,
+        help="Download a checkpoint-bound model package from this Hugging Face repository.",
+    )
+    parser.add_argument(
+        "--hf-revision",
+        default=None,
+        help="Immutable Hugging Face revision or branch. Defaults to the configuration.",
+    )
     args = parser.parse_args()
-    result = evaluate_external(load_config(args.config, args.set), name, fast=args.fast)
+    result = evaluate_external(
+        load_config(args.config, args.set),
+        name,
+        fast=args.fast,
+        checkpoint_path=args.checkpoint,
+        hf_repo_id=args.hf_repo,
+        hf_revision=args.hf_revision,
+    )
     LOGGER.info(
         "External evaluation completed: dataset=%s clean AUROC=%.6f.",
         name,
