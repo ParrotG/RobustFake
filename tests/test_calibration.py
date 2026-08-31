@@ -57,6 +57,16 @@ def test_absent_automatic_calibration_is_optional(tmp_path: Path) -> None:
     assert load_global_calibrator(config, checkpoint) is None
 
 
+def test_calibration_can_be_disabled_even_when_an_artifact_exists(tmp_path: Path) -> None:
+    checkpoint = tmp_path / "best.pt"
+    checkpoint.write_bytes(b"checkpoint")
+    (tmp_path / "calibration.json").write_text("not read", encoding="utf-8")
+    config = load_config(DEFAULT_CONFIG)
+    config.evaluation.calibration_enabled = False
+
+    assert load_global_calibrator(config, checkpoint) is None
+
+
 def test_robust_threshold_protects_clean_groups_and_improves_worst_group() -> None:
     probabilities = np.asarray(
         [

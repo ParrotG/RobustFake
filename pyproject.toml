@@ -34,12 +34,15 @@ aigc-cache-features = "aigc_recognizer.feature_cache:main"
 aigc-cache-residuals = "aigc_recognizer.feature_cache:main_residual_statistics"
 aigc-calibrate = "aigc_recognizer.calibration:main"
 robustfake-download-model = "aigc_recognizer.hub:main"
+robustfake-ablation-report = "aigc_recognizer.ablation_report:main"
 aigc-prepare-official-eval = "aigc_recognizer.official_data:main"
 aigc-evaluate-official = "aigc_recognizer.official_eval:main"
 aigc-prepare-wildfake-eval = "aigc_recognizer.external_data:main_wildfake"
 aigc-prepare-sid-eval = "aigc_recognizer.external_data:main_sid"
 aigc-evaluate-wildfake = "aigc_recognizer.external_eval:main_wildfake"
 aigc-evaluate-sid = "aigc_recognizer.external_eval:main_sid"
+aigc-download-baselines = "aigc_recognizer.baseline_eval:main_download"
+aigc-evaluate-baselines = "aigc_recognizer.baseline_eval:main"
 
 [build-system]
 requires = ["hatchling"]

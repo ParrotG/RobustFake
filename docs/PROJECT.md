@@ -23,7 +23,7 @@ RobustFake 针对图片级 AIGC 检测，重点是在未见生成器以及真实
 
 训练额外包含 projection head，只用于监督式对比损失。
 
-Residual Statistics Branch 从每个归一化视图提取 24 维固定高通统计，包括方向残差矩、逐通道 Laplacian 统计和水平/垂直相邻像素差。两个视图的 mean/std 经小型 MLP 后与 CLIP 聚合特征拼接。其统计量可在现有 CLIP feature cache 上另建 sidecar，不需要重新计算 backbone embedding。
+默认启用的 Residual Statistics Branch 从每个归一化视图提取 24 维固定高通统计，包括方向残差矩、逐通道 Laplacian 统计和水平/垂直相邻像素差。两个视图的 mean/std 经小型 MLP 后与 CLIP 聚合特征拼接。其统计量可在现有 CLIP feature cache 上另建 sidecar，不需要重新计算 backbone embedding。
 
 ### 2.3 成对鲁棒训练
 
@@ -137,7 +137,7 @@ uv run aigc-train \
 ```bash
 uv run aigc-train \
   --config configs/default.yaml \
-  --set training.resume_from=artifacts/runs/clip_b16_multilayer_v3/last.pt
+  --set training.resume_from=artifacts/runs/robustfake/last.pt
 ```
 
 checkpoint 包含检测头、optimizer、scheduler、AMP scaler、epoch、global step、随机状态、完整配置、数据 revision、backbone 身份和参数计数。恢复时会拒绝 backbone 或数据 revision 不一致的 checkpoint。
@@ -202,6 +202,20 @@ final/intermediate/residual features；同架构的新 checkpoint 可直接复�
 独立的 `results.fast.json`/`predictions.fast.jsonl`，不覆盖正式结果。
 
 每个场景输出 AUROC、AP、balanced accuracy、F1、真假类别 recall 与混淆计数，并按 `source_name` 输出样本数、平均 fake 概率、预测 fake 比例和组内准确率；同时保留逐图片置信度，便于定位某个生成器或真实来源的系统性失败。公共模型路径、batch size、worker 数和场景列表均集中在 `evaluation` 配置段。
+
+### 外部学术基线
+
+`aigc-evaluate-baselines` 将 CNNDetection（CVPR 2020，官方 `blur_jpg_prob0.5.pth`）和 UnivFD（CVPR 2023，OpenAI CLIP ViT-L/14 加官方线性头）接入相同的 external manifest 与场景矩阵。二者保持各自论文评测使用的 224 center crop 和 ImageNet/CLIP normalization，不使用 RobustFake 的标准化、双视图或 residual branch。场景操作在各模型预处理之前应用。
+
+```bash
+uv run aigc-download-baselines --config configs/default.yaml
+uv run aigc-evaluate-baselines \
+  --config configs/default.yaml \
+  --dataset wildfake_official \
+  --fast
+```
+
+配置固定官方仓库 commit、下载 URL 和 checkpoint SHA-256；校验失败时拒绝加载。基线输出为官方未校准 synthetic logit 的 sigmoid，因此跨模型主比较采用 AUROC/AP，0.5 阈值下的 balanced accuracy 与真假 recall 只作为诊断。完整结果、逐图片预测和可恢复的 scenario score cache 分别写入 `artifacts/evaluations/baselines` 与 `data/processed/baseline_score_cache`。`--dataset` 也支持 `wildfake_broad` 和 `sid_set`。
 
 `metrics.jsonl` 的每条记录包含 schema version、UTC timestamp、session ID、epoch 和 global step，允许恢复训练后继续形成明确的时间序列。
 

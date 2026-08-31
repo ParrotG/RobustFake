@@ -126,14 +126,17 @@ class FrozenClipDetector(nn.Module):
                 parameter.requires_grad_(False)
             self.visual_encoder.eval()
 
+        fusion_layers = (
+            config.intermediate_layers if config.multilayer_fusion_enabled else []
+        )
         self.intermediate_projections = nn.ModuleList(
             nn.Linear(config.intermediate_dim, config.embedding_dim, bias=False)
-            for _ in config.intermediate_layers
+            for _ in fusion_layers
         )
-        if config.intermediate_layers:
+        if fusion_layers:
             self.layer_gate = nn.Linear(config.embedding_dim, 1)
             self.layer_bias = nn.Parameter(
-                torch.zeros(len(config.intermediate_layers) + 1)
+                torch.zeros(len(fusion_layers) + 1)
             )
         else:
             self.layer_gate = None
@@ -279,6 +282,8 @@ class FrozenClipDetector(nn.Module):
 
     def _fuse_layers(self, encoded: EncodedViews) -> torch.Tensor:
         final = F.normalize(encoded.final.float(), dim=-1)
+        if not self.config.multilayer_fusion_enabled:
+            return final
         if not self.config.intermediate_layers:
             if encoded.intermediate is not None and encoded.intermediate.shape[-2] != 0:
                 raise ValueError("Cached intermediate features do not match the model configuration.")

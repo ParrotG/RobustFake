@@ -12,6 +12,7 @@ from aigc_recognizer.config import load_config
 from aigc_recognizer.external_eval import (
     EvaluationDatasetSpec,
     _balanced_stable_sample,
+    _compatible_external_identity,
     _load_or_create_external_features,
 )
 from aigc_recognizer.model import FrozenClipDetector
@@ -82,6 +83,45 @@ def test_extended_metrics_include_confusion_counts() -> None:
     assert metrics["false_negative"] == 1
     assert metrics["accuracy"] == 0.5
     assert metrics["count"] == 4
+
+
+def test_external_cache_identity_ignores_trainable_ablation_switches() -> None:
+    common = {
+        "schema_version": 1,
+        "dataset": "official",
+        "manifest_sha256": "manifest",
+        "record_ids_sha256": "records",
+        "scenario": "clean",
+        "seed": 2026,
+        "views": {"size": 224},
+        "standardization": {"enabled": True},
+        "dtype": "float16",
+    }
+    existing = {
+        **common,
+        "model": {
+            "backbone_name": "ViT-B-16-quickgelu",
+            "pretrained": "openai",
+            "embedding_dim": 512,
+            "intermediate_layers": [3, 6, 9, 11],
+            "intermediate_dim": 768,
+            "residual_statistics_enabled": True,
+            "head_dim": 256,
+        },
+    }
+    current = {
+        **common,
+        "feature_model": {
+            "backbone_name": "ViT-B-16-quickgelu",
+            "pretrained": "openai",
+            "embedding_dim": 512,
+            "intermediate_layers": [3, 6, 9, 11],
+            "intermediate_dim": 768,
+            "residual_statistics_version": 1,
+        },
+    }
+
+    assert _compatible_external_identity(existing, current)
 
 
 def test_fast_external_sample_is_deterministic_and_label_balanced() -> None:

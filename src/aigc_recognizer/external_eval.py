@@ -28,7 +28,13 @@ from aigc_recognizer.config import AppConfig, config_argument_parser, load_confi
 from aigc_recognizer.data.transforms import RobustPairTransform, canonical_rgb
 from aigc_recognizer.metrics import binary_metrics
 from aigc_recognizer.hub import resolve_inference_checkpoint
-from aigc_recognizer.model import EncodedViews, FrozenClipDetector, create_detector
+from aigc_recognizer.model import (
+    RESIDUAL_STATISTICS_VERSION,
+    EncodedViews,
+    FrozenClipDetector,
+    ResidualStatisticsExtractor,
+    create_detector,
+)
 from aigc_recognizer.train import resolve_device
 from aigc_recognizer.utils import atomic_torch_save, seed_everything, seed_worker
 
@@ -317,7 +323,14 @@ def _external_cache_identity(
         ).hexdigest(),
         "scenario": scenario,
         "seed": config.project.seed,
-        "model": dataclasses.asdict(config.model),
+        "feature_model": {
+            "backbone_name": config.model.backbone_name,
+            "pretrained": config.model.pretrained,
+            "embedding_dim": config.model.embedding_dim,
+            "intermediate_layers": config.model.intermediate_layers,
+            "intermediate_dim": config.model.intermediate_dim,
+            "residual_statistics_version": RESIDUAL_STATISTICS_VERSION,
+        },
         "views": dataclasses.asdict(config.views),
         "standardization": dataclasses.asdict(config.standardization),
         "dtype": config.evaluation.external_feature_cache_dtype,
@@ -330,6 +343,26 @@ def _external_cache_path(
     serialized = json.dumps(identity, sort_keys=True, separators=(",", ":"))
     key = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
     return Path(config.evaluation.external_feature_cache_dir) / spec.name / f"{key}.pt"
+
+
+def _compatible_external_identity(existing: dict[str, Any], current: dict[str, Any]) -> bool:
+    """Accept older head-coupled cache identities when frozen features are identical."""
+    existing_core = {
+        key: value for key, value in existing.items() if key not in {"model", "feature_model"}
+    }
+    current_core = {
+        key: value for key, value in current.items() if key not in {"model", "feature_model"}
+    }
+    if existing_core != current_core:
+        return False
+    existing_model = existing.get("feature_model") or existing.get("model")
+    if not isinstance(existing_model, dict):
+        return False
+    return all(
+        existing_model.get(key) == value
+        for key, value in current["feature_model"].items()
+        if key != "residual_statistics_version"
+    )
 
 
 @torch.inference_mode()
@@ -355,6 +388,19 @@ def _load_or_create_external_features(
             raise RuntimeError(f"External feature cache identity mismatch: {path}")
         LOGGER.info("Using external feature cache: %s", path)
         return payload
+    cache_directory = path.parent
+    if cache_directory.is_dir():
+        for candidate in sorted(cache_directory.glob("*.pt")):
+            payload = torch.load(candidate, map_location="cpu", weights_only=False)
+            existing_identity = payload.get("identity")
+            if (
+                isinstance(existing_identity, dict)
+                and _compatible_external_identity(existing_identity, identity)
+                and payload.get("intermediate") is not None
+                and payload.get("residual_statistics") is not None
+            ):
+                LOGGER.info("Using compatible external feature cache: %s", candidate)
+                return payload
 
     dtype = (
         torch.float16
@@ -368,6 +414,11 @@ def _load_or_create_external_features(
     ids: list[str] = []
     paths: list[str] = []
     source_names: list[str] = []
+    residual_extractor = (
+        None
+        if model.residual_extractor is not None
+        else ResidualStatisticsExtractor().to(device).eval()
+    )
     for batch in tqdm(loader, desc=f"Cache {spec.name}/{scenario}"):
         views = batch["views"].to(device, non_blocking=True)
         with _autocast(config, device):
@@ -375,10 +426,12 @@ def _load_or_create_external_features(
         final.append(encoded.final.to(dtype=dtype, device="cpu"))
         if encoded.intermediate is not None:
             intermediate.append(encoded.intermediate.to(dtype=dtype, device="cpu"))
-        if encoded.residual_statistics is not None:
-            residual.append(
-                encoded.residual_statistics.to(dtype=dtype, device="cpu")
-            )
+        residual_statistics = encoded.residual_statistics
+        if residual_statistics is None:
+            if residual_extractor is None:
+                raise RuntimeError("Residual-statistics extractor is unavailable.")
+            residual_statistics = residual_extractor(views)
+        residual.append(residual_statistics.to(dtype=dtype, device="cpu"))
         labels.append(batch["label"].float().cpu())
         ids.extend(str(value) for value in batch["id"])
         paths.extend(str(value) for value in batch["path"])
@@ -387,7 +440,7 @@ def _load_or_create_external_features(
         "identity": identity,
         "final": torch.cat(final),
         "intermediate": torch.cat(intermediate) if intermediate else None,
-        "residual_statistics": torch.cat(residual) if residual else None,
+        "residual_statistics": torch.cat(residual),
         "label": torch.cat(labels),
         "id": ids,
         "path": paths,

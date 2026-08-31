@@ -1,6 +1,6 @@
 project:
   seed: 2026
-  run_name: clip_b16_multilayer_v3
+  run_name: robustfake
 
 data:
   repo_id: Shanmuk4622/ai-image-detection-dataset
@@ -173,11 +173,12 @@ model:
   pretrained: openai
   embedding_dim: 512
   intermediate_layers: [3, 6, 9, 11]
+  multilayer_fusion_enabled: true
   intermediate_dim: 768
   head_dim: 256
   projection_dim: 128
   dropout: 0.10
-  residual_statistics_enabled: false
+  residual_statistics_enabled: true
   residual_statistics_dim: 24
   residual_hidden_dim: 64
 
@@ -251,6 +252,7 @@ evaluation:
   num_workers: 8
   prefetch_factor: 2
   save_predictions: true
+  calibration_enabled: true
   calibration_path: null
   calibration_threshold_strategy: constrained_minimax
   calibration_max_clean_ba_drop: 0.005
@@ -295,6 +297,27 @@ evaluation:
     - combo_blur_1.0_resize_0.5_jpeg_50
     - combo_edit_color_0.20_noise_0.02_jpeg_70
     - combo_stress_crop_0.80_blur_1.0_resize_0.25_jpeg_30
+
+baseline_evaluation:
+  cache_dir: data/cache/external_baselines
+  results_dir: artifacts/evaluations/baselines
+  score_cache_enabled: true
+  score_cache_dir: data/processed/baseline_score_cache
+  input_size: 224
+  threshold: 0.5
+  max_download_gb: 2.0
+  download_retries: 4
+  retry_backoff_seconds: 2.0
+  cnndetection_checkpoint_path: null
+  cnndetection_url: https://www.dropbox.com/s/2g2jagq2jn1fd0i/blur_jpg_prob0.5.pth?dl=1
+  cnndetection_sha256: 3533f3e58a3b82215f21197f2faf4e99b911ec42a4a6e2d7823e04d5f3fd245a
+  cnndetection_repository_revision: ea0b5622365e3a9cd31d1b54b6b5971131a839ab
+  univfd_checkpoint_path: null
+  univfd_url: https://raw.githubusercontent.com/WisconsinAIVision/UniversalFakeDetect/030495aea3300a8b54c0ec37ec7fe1dd7e63c619/pretrained_weights/fc_weights.pth
+  univfd_sha256: 477100745713bcc957beb2b40859536859b6483fd6301b3b9293151b194c7847
+  univfd_repository_revision: 030495aea3300a8b54c0ec37ec7fe1dd7e63c619
+  univfd_backbone_name: ViT-L-14-quickgelu
+  univfd_pretrained: openai
 
 wildfake_evaluation:
   repo_id: hy2628982280/WildFake

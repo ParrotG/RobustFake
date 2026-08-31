@@ -43,7 +43,13 @@ class DummyIntermediateEncoder(DummyVisualEncoder):
 
 
 def test_model_is_view_permutation_invariant_and_backbone_is_frozen() -> None:
-    config = ModelConfig(embedding_dim=8, head_dim=6, projection_dim=4, dropout=0.0)
+    config = ModelConfig(
+        embedding_dim=8,
+        head_dim=6,
+        projection_dim=4,
+        dropout=0.0,
+        residual_statistics_enabled=False,
+    )
     encoder = DummyVisualEncoder(8)
     model = FrozenClipDetector(encoder, config).eval()
     views = torch.randn(3, 2, 3, 8, 8)
@@ -57,7 +63,13 @@ def test_model_is_view_permutation_invariant_and_backbone_is_frozen() -> None:
 
 
 def test_robust_loss_is_finite_and_only_heads_receive_gradients() -> None:
-    config = ModelConfig(embedding_dim=8, head_dim=6, projection_dim=4, dropout=0.0)
+    config = ModelConfig(
+        embedding_dim=8,
+        head_dim=6,
+        projection_dim=4,
+        dropout=0.0,
+        residual_statistics_enabled=False,
+    )
     encoder = DummyVisualEncoder(8)
     model = FrozenClipDetector(encoder, config)
     clean = model(torch.randn(4, 2, 3, 8, 8))
@@ -71,7 +83,13 @@ def test_robust_loss_is_finite_and_only_heads_receive_gradients() -> None:
 
 
 def test_paired_forward_matches_separate_forward_calls() -> None:
-    config = ModelConfig(embedding_dim=8, head_dim=6, projection_dim=4, dropout=0.0)
+    config = ModelConfig(
+        embedding_dim=8,
+        head_dim=6,
+        projection_dim=4,
+        dropout=0.0,
+        residual_statistics_enabled=False,
+    )
     model = FrozenClipDetector(DummyVisualEncoder(8), config).eval()
     clean_views = torch.randn(4, 2, 3, 8, 8)
     transformed_views = torch.randn(4, 2, 3, 8, 8)
@@ -96,6 +114,7 @@ def test_multilayer_online_and_cached_forward_match() -> None:
         head_dim=6,
         projection_dim=4,
         dropout=0.0,
+        residual_statistics_enabled=False,
     )
     model = FrozenClipDetector(DummyIntermediateEncoder(8, 5), config).eval()
     views = torch.randn(3, 2, 3, 8, 8)
@@ -112,6 +131,29 @@ def test_multilayer_online_and_cached_forward_match() -> None:
     assert model.intermediate_projections[0].weight.grad is not None
     assert model.layer_gate is not None
     assert model.layer_gate.weight.grad is not None
+
+
+def test_multilayer_ablation_reuses_encoded_intermediate_features() -> None:
+    config = ModelConfig(
+        embedding_dim=8,
+        intermediate_layers=[0, 2],
+        multilayer_fusion_enabled=False,
+        intermediate_dim=5,
+        head_dim=6,
+        projection_dim=4,
+        dropout=0.0,
+        residual_statistics_enabled=False,
+    )
+    model = FrozenClipDetector(DummyIntermediateEncoder(8, 5), config).eval()
+    views = torch.randn(3, 2, 3, 8, 8)
+
+    encoded = model.encode_views(views)
+    output = model.forward_encoded(encoded)
+
+    assert encoded.intermediate is not None
+    assert output.logits.shape == (3,)
+    assert len(model.intermediate_projections) == 0
+    assert model.layer_gate is None
 
 
 def test_probability_consistency_is_bounded_and_respects_ramp_scale() -> None:

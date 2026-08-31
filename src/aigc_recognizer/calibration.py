@@ -90,6 +90,8 @@ def load_global_calibrator(
     checkpoint_sha256: str | None = None,
 ) -> GlobalCalibrator | None:
     """Load a compatible calibrator, treating an absent automatic path as disabled."""
+    if not config.evaluation.calibration_enabled:
+        return None
     path = calibration_path(config, checkpoint_path)
     if not path.is_file():
         if config.evaluation.calibration_path:
