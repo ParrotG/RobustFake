@@ -481,6 +481,7 @@ def classify_provenance(
         return {
             "classification": "ai_declared_by_trusted_c2pa",
             "confidence": "high",
+            "confidence_score": 0.99,
             "reason": "A trusted, cryptographically valid C2PA action declares trained algorithmic media.",
         }
     if c2pa_valid and c2pa.get("trained_algorithmic_media_markers"):
@@ -492,12 +493,14 @@ def classify_provenance(
         return {
             "classification": "ai_declared_by_valid_c2pa",
             "confidence": "medium",
+            "confidence_score": 0.85,
             "reason": reason,
         }
     if c2pa_valid and credential_trusted and c2pa.get("camera_capture_markers"):
         return {
             "classification": "camera_capture_declared_by_trusted_c2pa",
             "confidence": "high",
+            "confidence_score": 0.02,
             "reason": "A trusted, cryptographically valid C2PA action declares digital capture; later edits may still exist.",
         }
     if c2pa_valid and c2pa.get("camera_capture_markers"):
@@ -509,6 +512,7 @@ def classify_provenance(
         return {
             "classification": "camera_capture_declared_by_valid_c2pa",
             "confidence": "medium",
+            "confidence_score": 0.10,
             "reason": reason,
         }
     if watermark and watermark.get("detected"):
@@ -517,23 +521,27 @@ def classify_provenance(
         return {
             "classification": "visible_ai_watermark",
             "confidence": "medium",
+            "confidence_score": 0.75,
             "reason": f"A visible watermark associated with {vendor_text} was detected; visible marks can be removed or added.",
         }
     if c2pa.get("manifest_present"):
         return {
             "classification": "c2pa_present_but_not_decisive",
             "confidence": "low",
+            "confidence_score": 0.50,
             "reason": "The manifest is unverified or does not contain a decisive source-type assertion.",
         }
     if exif.get("ai_software_markers"):
         return {
             "classification": "ai_software_hint_from_exif",
             "confidence": "low",
+            "confidence_score": 0.65,
             "reason": "EXIF names AI software but is editable and therefore not proof.",
         }
     return {
         "classification": "inconclusive",
         "confidence": "none",
+        "confidence_score": 0.50,
         "reason": "No verified provenance assertion identifies AI generation or camera capture.",
     }
 
@@ -615,6 +623,7 @@ def semantic_assessment(
         c2pa_conclusion: str,
         reason: str,
         limitations: list[str],
+        ai_confidence: float,
     ) -> dict[str, Any]:
         return {
             "verdict": verdict,
@@ -623,6 +632,7 @@ def semantic_assessment(
             "synthetic_likelihood": synthetic_likelihood,
             "capture_provenance": capture_provenance,
             "confidence": confidence,
+            "ai_confidence": round(max(0.0, min(1.0, ai_confidence)), 4),
             "primary_evidence": primary_evidence,
             "basis": primary_evidence,
             "c2pa_conclusion": c2pa_conclusion,
@@ -646,6 +656,7 @@ def semantic_assessment(
                 c2pa_conclusion="签名有效且签名凭证受信任，C2PA 声明内容属于训练算法生成媒体。",
                 reason="以经过验证的 C2PA AI 生成声明为主要依据，判定为虚假/AI 生成内容。",
                 limitations=["该结论表示内容来源为 AI 生成，不是法律意义上的欺诈认定。", "EXIF 只能作为辅助信息。"],
+                ai_confidence=0.99,
             )
         return result(
             assessment="likely_ai_generated",
@@ -658,6 +669,7 @@ def semantic_assessment(
             c2pa_conclusion="C2PA 完整性有效并声明训练算法生成媒体，但签名凭证未被信任或未建立信任。",
             reason="C2PA 对 AI 生成有明确声明，但由于签名信任不足，结论降为中等置信度。",
             limitations=["签名凭证未建立信任，因此不能达到最高证据等级。", "EXIF 可以被编辑或移除。"],
+            ai_confidence=0.85,
         )
 
     if c2pa_valid and has_camera_capture:
@@ -673,6 +685,7 @@ def semantic_assessment(
                 c2pa_conclusion="签名有效且签名凭证受信任，C2PA 声明内容来自数字采集。",
                 reason="以经过验证的 C2PA 数字采集声明为主要依据，判定为真实来源；这不排除后续编辑。",
                 limitations=["C2PA 数字采集声明不能排除签名之后的图像编辑。", "EXIF 可以被编辑或移除。"],
+                ai_confidence=0.02,
             )
         return result(
             assessment="likely_camera_captured",
@@ -685,6 +698,7 @@ def semantic_assessment(
             c2pa_conclusion="C2PA 完整性有效并声明数字采集，但签名凭证未被信任或未建立信任。",
             reason="C2PA 支持数字采集来源，但由于签名信任不足，结论降为中等置信度。",
             limitations=["签名凭证未建立信任。", "C2PA 数字采集声明不能排除后续编辑。"],
+            ai_confidence=0.10,
         )
 
     if watermark.get("detected"):
@@ -705,6 +719,7 @@ def semantic_assessment(
             ),
             reason=f"在图像角落检测到与 {vendor_text} 相关的可见水印；这支持 AI 生成判断，但水印可能被后期添加或移除。",
             limitations=["可见水印不是加密签名，不能单独证明图片来源。", "裁剪、压缩或 OCR 失败可能导致漏检。"],
+            ai_confidence=0.75,
         )
 
     if ai_exif_hint:
@@ -719,6 +734,7 @@ def semantic_assessment(
             c2pa_conclusion="没有经过验证的 C2PA AI 生成结论。",
             reason="EXIF 软件字段出现 AI 软件标记，但 EXIF 可编辑，因此只能作为低置信度提示。",
             limitations=["EXIF 软件字段可以伪造、复制、删除或被后处理软件改写。", "没有有效 C2PA 时不能高置信度判定。"],
+            ai_confidence=0.65,
         )
 
     return result(
@@ -736,6 +752,7 @@ def semantic_assessment(
         ),
         reason="详细 EXIF 可以增强元数据可信度，但没有经过验证的 C2PA 来源声明时，不能据此确定图片真实。",
         limitations=["详细 EXIF 只能说明元数据较完整，不能单独证明图片真实。", "EXIF 可以被编辑或移除。"],
+        ai_confidence=0.50,
     )
 
 
@@ -814,6 +831,7 @@ def _semantic_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
                 "verdict": assessment.get("verdict", "unknown"),
                 "verdict_label_zh": assessment.get("verdict_label_zh", "无法确定"),
                 "confidence": assessment.get("confidence", "none"),
+                "ai_confidence": round(float(assessment.get("ai_confidence", 0.5)), 4),
                 "basis": assessment.get("basis", "no_decisive_provenance"),
                 "reason": assessment.get("reason", "没有决定性来源证据。"),
                 "c2pa_conclusion": assessment.get("c2pa_conclusion", ""),
@@ -822,6 +840,7 @@ def _semantic_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
             }
         )
     counts = {verdict: sum(record["verdict"] == verdict for record in semantic_records) for verdict in ("real", "fake", "unknown")}
+    scores = [record["ai_confidence"] for record in semantic_records]
     return {
         "schema_version": 1,
         "report_type": "semantic_provenance_assessment",
@@ -832,6 +851,11 @@ def _semantic_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
             "real_count": counts["real"],
             "fake_count": counts["fake"],
             "unknown_count": counts["unknown"],
+            "ai_confidence_mean": round(sum(scores) / len(scores), 4) if scores else 0.5,
+            "ai_confidence_min": min(scores) if scores else 0.5,
+            "ai_confidence_max": max(scores) if scores else 0.5,
+            "ai_confidence_ge_0_5_count": sum(score >= 0.5 for score in scores),
+            "ai_confidence_ge_0_75_count": sum(score >= 0.75 for score in scores),
             "interpretation": "C2PA 是主要判断依据；EXIF 详细程度只能作为辅助证据，不能单独证明真实。",
         },
         "records": semantic_records,

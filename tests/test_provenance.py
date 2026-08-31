@@ -33,8 +33,10 @@ def test_exif_ai_software_is_reported_as_a_hint(tmp_path: Path) -> None:
     assert result["exif"]["ai_software_markers"] == ["google imagen"]
     assert result["decision"]["classification"] == "ai_software_hint_from_exif"
     assert result["decision"]["confidence"] == "low"
+    assert result["decision"]["confidence_score"] == 0.65
     assert result["authenticity_summary"]["verdict"] == "fake"
     assert result["authenticity_summary"]["confidence"] == "low"
+    assert result["authenticity_summary"]["ai_confidence"] == 0.65
 
 
 def test_detailed_exif_without_c2pa_remains_unknown(tmp_path: Path) -> None:
@@ -44,6 +46,7 @@ def test_detailed_exif_without_c2pa_remains_unknown(tmp_path: Path) -> None:
     result = inspect_image(image_path, load_config(DEFAULT_CONFIG))
 
     assert result["authenticity_summary"]["verdict"] == "unknown"
+    assert result["authenticity_summary"]["ai_confidence"] == 0.5
     assert result["authenticity_summary"]["exif_conclusion"]["level"] == "partial"
     assert "不能据此确定" in result["authenticity_summary"]["reason"]
 
@@ -83,6 +86,7 @@ def test_c2pa_semantic_assessment_prioritizes_verified_source_type() -> None:
 
     assert result["verdict"] == "real"
     assert result["confidence"] == "high"
+    assert result["ai_confidence"] == 0.02
     assert result["basis"] == "trusted_c2pa"
 
 
@@ -328,6 +332,11 @@ def test_cli_writes_a_json_report(tmp_path: Path) -> None:
     report = json.loads(report_path.read_text(encoding="utf-8"))
     assert report["input"] == str(image_path)
     assert report["records"][0]["path"] == str(image_path)
+    semantic = json.loads(
+        report_path.with_name("report-semantic.json").read_text(encoding="utf-8")
+    )
+    assert semantic["records"][0]["ai_confidence"] == 0.5
+    assert semantic["summary"]["ai_confidence_mean"] == 0.5
     semantic_path = tmp_path / "report-semantic.json"
     semantic_report = json.loads(semantic_path.read_text(encoding="utf-8"))
     assert semantic_report["report_type"] == "semantic_provenance_assessment"
