@@ -13,9 +13,9 @@ from aigc_recognizer.external_eval import _main as _shared_main
 __all__ = ["_extended_metrics", "_scenario_image", "evaluate_official", "main"]
 
 
-def evaluate_official(config: AppConfig) -> dict[str, object]:
+def evaluate_official(config: AppConfig, *, fast: bool = False) -> dict[str, object]:
     """Evaluate through the same manifest-backed pipeline as other datasets."""
-    return evaluate_external(config, "wildfake_official")
+    return evaluate_external(config, "wildfake_official", fast=fast)
 
 
 def main() -> None:

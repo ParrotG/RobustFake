@@ -1,11 +1,34 @@
+import json
 import random
+from pathlib import Path
 
 import numpy as np
 import pytest
+import torch
 from PIL import Image
+from torch import nn
 
+from aigc_recognizer.config import load_config
+from aigc_recognizer.external_eval import (
+    EvaluationDatasetSpec,
+    _balanced_stable_sample,
+    _load_or_create_external_features,
+)
+from aigc_recognizer.model import FrozenClipDetector
 from aigc_recognizer.official_data import select_official_rows
 from aigc_recognizer.official_eval import _extended_metrics, _scenario_image
+
+
+DEFAULT_CONFIG = Path(__file__).parents[1] / "configs" / "default.yaml"
+
+
+class DummyVisualEncoder(nn.Module):
+    def __init__(self, output_dim: int) -> None:
+        super().__init__()
+        self.projection = nn.Linear(3, output_dim)
+
+    def forward(self, images: torch.Tensor) -> torch.Tensor:
+        return self.projection(images.mean(dim=(-1, -2)))
 
 
 def test_official_row_selection_is_exact_and_safe() -> None:
@@ -58,6 +81,79 @@ def test_extended_metrics_include_confusion_counts() -> None:
     assert metrics["false_positive"] == 1
     assert metrics["false_negative"] == 1
     assert metrics["accuracy"] == 0.5
+    assert metrics["count"] == 4
+
+
+def test_fast_external_sample_is_deterministic_and_label_balanced() -> None:
+    records = [
+        {"id": f"real-{index}", "label": 0} for index in range(9)
+    ] + [{"id": f"fake-{index}", "label": 1} for index in range(13)]
+
+    first = _balanced_stable_sample(records, 10, 2026)
+    second = _balanced_stable_sample(records, 10, 2026)
+
+    assert first == second
+    assert len(first) == 10
+    assert sum(int(record["label"]) == 0 for record in first) == 5
+    assert sum(int(record["label"]) == 1 for record in first) == 5
+
+
+def test_external_frozen_features_are_cached_and_reused(tmp_path: Path) -> None:
+    image_root = tmp_path / "evaluation"
+    image_root.mkdir()
+    records = []
+    for label in (0, 1):
+        for index in range(2):
+            name = f"{label}-{index}.png"
+            Image.new("RGB", (20, 24), color=label * 200).save(image_root / name)
+            records.append(
+                {
+                    "id": f"id-{label}-{index}",
+                    "path": name,
+                    "label": label,
+                    "source_name": f"source-{label}",
+                }
+            )
+    manifest = image_root / "manifest.jsonl"
+    manifest.write_text(
+        "\n".join(json.dumps(record) for record in records) + "\n",
+        encoding="utf-8",
+    )
+    spec = EvaluationDatasetSpec(
+        name="smoke",
+        repo_id="local",
+        revision="revision",
+        output_dir=str(image_root),
+        manifest_path=str(manifest),
+        audit_path=str(image_root / "audit.json"),
+        results_path=str(tmp_path / "results.json"),
+        predictions_path=str(tmp_path / "predictions.jsonl"),
+        expected_real=2,
+        expected_fake=2,
+    )
+    config = load_config(DEFAULT_CONFIG)
+    config.views.input_size = 16
+    config.model.embedding_dim = 8
+    config.model.intermediate_layers = []
+    config.model.head_dim = 6
+    config.model.projection_dim = 4
+    config.training.device = "cpu"
+    config.training.amp = False
+    config.evaluation.batch_size = 2
+    config.evaluation.num_workers = 0
+    config.evaluation.external_feature_cache_dir = str(tmp_path / "cache")
+    model = FrozenClipDetector(DummyVisualEncoder(8), config.model).eval()
+
+    first = _load_or_create_external_features(
+        model, config, torch.device("cpu"), spec, "clean", max_samples=None
+    )
+    second = _load_or_create_external_features(
+        model, config, torch.device("cpu"), spec, "clean", max_samples=None
+    )
+
+    assert first["final"].shape == (4, 2, 8)
+    assert torch.equal(first["final"], second["final"])
+    assert len(list((tmp_path / "cache").rglob("*.pt"))) == 1
 
 
 @pytest.mark.parametrize(

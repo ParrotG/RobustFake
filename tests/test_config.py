@@ -24,7 +24,12 @@ def test_default_training_profile_is_stability_oriented() -> None:
     assert config.training.warmup_fraction == pytest.approx(0.05)
     assert config.training.num_workers == 12
     assert config.training.prefetch_factor == 1
+    assert config.loss.consistency_weight == pytest.approx(0.5)
+    assert config.loss.consistency_rampup_epochs == 1
     assert config.loss.contrastive_weight == pytest.approx(0.05)
+    assert config.evaluation.external_feature_cache_enabled
+    assert config.evaluation.fast_max_samples == 2000
+    assert "clean" in config.evaluation.fast_scenarios
 
 
 def test_unknown_configuration_key_is_rejected(tmp_path: Path) -> None:
@@ -76,6 +81,11 @@ def test_composed_evaluation_can_be_disabled_from_central_config() -> None:
 def test_unknown_composed_evaluation_scenario_is_rejected() -> None:
     with pytest.raises(ConfigError, match="unsupported scenario"):
         load_config(DEFAULT_CONFIG, ["evaluation.composed_scenarios=[unknown]"])
+
+
+def test_fast_evaluation_requires_supported_scenarios() -> None:
+    with pytest.raises(ConfigError, match="Fast external evaluation scenarios"):
+        load_config(DEFAULT_CONFIG, ["evaluation.fast_scenarios=[clean, unknown]"])
 
 
 def test_unsafe_wildfake_exclusion_path_is_rejected() -> None:

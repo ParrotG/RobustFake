@@ -253,8 +253,8 @@ class ModelConfig:
 @dataclass
 class LossConfig:
     classification_weight: float = 1.0
-    consistency_weight: float = 0.1
-    consistency_rampup_epochs: int = 3
+    consistency_weight: float = 0.5
+    consistency_rampup_epochs: int = 1
     contrastive_weight: float = 0.05
     contrastive_temperature: float = 0.10
 
@@ -336,6 +336,23 @@ class EvaluationConfig:
     num_workers: int = 8
     prefetch_factor: int = 2
     save_predictions: bool = True
+    calibration_path: str | None = None
+    external_feature_cache_enabled: bool = True
+    external_feature_cache_dir: str = "data/processed/external_feature_cache"
+    external_feature_cache_dtype: str = "float16"
+    fast_max_samples: int = 2_000
+    fast_scenarios: list[str] = field(
+        default_factory=lambda: [
+            "clean",
+            "jpeg_30",
+            "blur_2.0",
+            "resize_0.25",
+            "noise_0.10",
+            "color_jitter_0.20",
+            "center_crop_0.80",
+            "combo_stress_crop_0.80_blur_1.0_resize_0.25_jpeg_30",
+        ]
+    )
     enable_composed_scenarios: bool = True
     scenarios: list[str] = field(
         default_factory=lambda: [
@@ -734,6 +751,12 @@ class AppConfig:
             raise ConfigError("External evaluation loader settings are invalid.")
         if evaluation.prefetch_factor <= 0:
             raise ConfigError("External evaluation prefetch factor must be positive.")
+        if evaluation.external_feature_cache_dtype not in {"float16", "float32"}:
+            raise ConfigError(
+                "evaluation.external_feature_cache_dtype must be float16 or float32."
+            )
+        if not evaluation.external_feature_cache_dir or evaluation.fast_max_samples <= 0:
+            raise ConfigError("External evaluation cache path and fast sample count are invalid.")
         all_supported_scenarios = supported_scenarios | {
             "combo_social_resize_0.5_jpeg_70",
             "combo_repost_jpeg_90_resize_0.5_jpeg_70",
@@ -749,6 +772,15 @@ class AppConfig:
             raise ConfigError("External evaluation scenarios must include clean.")
         if len(set(configured_scenarios)) != len(configured_scenarios):
             raise ConfigError("External evaluation scenarios must not contain duplicates.")
+        if (
+            not evaluation.fast_scenarios
+            or not set(evaluation.fast_scenarios) <= all_supported_scenarios
+            or "clean" not in evaluation.fast_scenarios
+            or len(set(evaluation.fast_scenarios)) != len(evaluation.fast_scenarios)
+        ):
+            raise ConfigError(
+                "Fast external evaluation scenarios must be supported, unique, and include clean."
+            )
         broad = self.wildfake_evaluation
         if broad.repo_id != "hy2628982280/WildFake":
             raise ConfigError("The broad evaluation supports only hy2628982280/WildFake.")

@@ -183,8 +183,8 @@ model:
 
 loss:
   classification_weight: 1.0
-  consistency_weight: 0.1
-  consistency_rampup_epochs: 3
+  consistency_weight: 0.5
+  consistency_rampup_epochs: 1
   contrastive_weight: 0.05
   contrastive_temperature: 0.10
 
@@ -251,6 +251,20 @@ evaluation:
   num_workers: 8
   prefetch_factor: 2
   save_predictions: true
+  calibration_path: null
+  external_feature_cache_enabled: true
+  external_feature_cache_dir: data/processed/external_feature_cache
+  external_feature_cache_dtype: float16
+  fast_max_samples: 2000
+  fast_scenarios:
+    - clean
+    - jpeg_30
+    - blur_2.0
+    - resize_0.25
+    - noise_0.10
+    - color_jitter_0.20
+    - center_crop_0.80
+    - combo_stress_crop_0.80_blur_1.0_resize_0.25_jpeg_30
   enable_composed_scenarios: true
   scenarios:
     - clean

@@ -11,6 +11,7 @@ import os
 import random
 import tempfile
 from contextlib import nullcontext
+import dataclasses
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -22,12 +23,13 @@ from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
 from aigc_recognizer.checkpoint import load_inference_checkpoint
+from aigc_recognizer.calibration import GlobalCalibrator, load_global_calibrator
 from aigc_recognizer.config import AppConfig, config_argument_parser, load_config
 from aigc_recognizer.data.transforms import RobustPairTransform, canonical_rgb
 from aigc_recognizer.metrics import binary_metrics
-from aigc_recognizer.model import FrozenClipDetector, create_detector
+from aigc_recognizer.model import EncodedViews, FrozenClipDetector, create_detector
 from aigc_recognizer.train import resolve_device
-from aigc_recognizer.utils import seed_everything, seed_worker
+from aigc_recognizer.utils import atomic_torch_save, seed_everything, seed_worker
 
 LOGGER = logging.getLogger(__name__)
 
@@ -185,10 +187,46 @@ def _scenario_image(image: Image.Image, scenario: str, rng: random.Random) -> Im
     return image
 
 
+def _balanced_stable_sample(
+    records: list[dict[str, Any]], maximum: int | None, seed: int
+) -> list[dict[str, Any]]:
+    """Select a deterministic label-balanced diagnostic subset."""
+    if maximum is None or maximum >= len(records):
+        return records
+    grouped = {
+        label: [record for record in records if int(record["label"]) == label]
+        for label in (0, 1)
+    }
+    if not all(grouped.values()):
+        raise RuntimeError("Fast external evaluation requires both labels.")
+    targets = {0: maximum // 2, 1: maximum - maximum // 2}
+    if any(targets[label] > len(grouped[label]) for label in (0, 1)):
+        raise ValueError("Fast sample count exceeds the available size of one label.")
+
+    def rank(record: dict[str, Any]) -> str:
+        return hashlib.sha256(
+            f"{seed}:external-fast:{record['id']}".encode("utf-8")
+        ).hexdigest()
+
+    selected = [
+        record
+        for label in (0, 1)
+        for record in sorted(grouped[label], key=rank)[: targets[label]]
+    ]
+    return sorted(selected, key=lambda record: str(record["id"]))
+
+
 class ExternalEvaluationDataset(Dataset[dict[str, Any]]):
     """Load a common external manifest under one deterministic scenario."""
 
-    def __init__(self, config: AppConfig, spec: EvaluationDatasetSpec, scenario: str) -> None:
+    def __init__(
+        self,
+        config: AppConfig,
+        spec: EvaluationDatasetSpec,
+        scenario: str,
+        *,
+        max_samples: int | None = None,
+    ) -> None:
         self.config = config
         self.spec = spec
         self.scenario = scenario
@@ -196,11 +234,12 @@ class ExternalEvaluationDataset(Dataset[dict[str, Any]]):
         manifest_path = Path(spec.manifest_path)
         if not manifest_path.is_file():
             raise FileNotFoundError(f"Evaluation manifest does not exist: {manifest_path}")
-        self.records = [
+        records = [
             json.loads(line)
             for line in manifest_path.read_text(encoding="utf-8").splitlines()
             if line.strip()
         ]
+        self.records = _balanced_stable_sample(records, max_samples, config.project.seed)
         self.transform = RobustPairTransform(config)
 
     def __len__(self) -> int:
@@ -237,10 +276,18 @@ class ExternalEvaluationDataset(Dataset[dict[str, Any]]):
         }
 
 
-def _loader(config: AppConfig, spec: EvaluationDatasetSpec, scenario: str) -> DataLoader[Any]:
+def _loader(
+    config: AppConfig,
+    spec: EvaluationDatasetSpec,
+    scenario: str,
+    *,
+    max_samples: int | None = None,
+) -> DataLoader[Any]:
     evaluation = config.evaluation
     arguments: dict[str, Any] = {
-        "dataset": ExternalEvaluationDataset(config, spec, scenario),
+        "dataset": ExternalEvaluationDataset(
+            config, spec, scenario, max_samples=max_samples
+        ),
         "batch_size": evaluation.batch_size,
         "shuffle": False,
         "num_workers": evaluation.num_workers,
@@ -251,6 +298,103 @@ def _loader(config: AppConfig, spec: EvaluationDatasetSpec, scenario: str) -> Da
         arguments["prefetch_factor"] = evaluation.prefetch_factor
         arguments["persistent_workers"] = False
     return DataLoader(**arguments)
+
+
+def _external_cache_identity(
+    config: AppConfig,
+    spec: EvaluationDatasetSpec,
+    scenario: str,
+    records: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Describe every input that can change frozen external features."""
+    return {
+        "schema_version": 1,
+        "dataset": spec.name,
+        "manifest_sha256": _file_sha256(Path(spec.manifest_path)),
+        "record_ids_sha256": hashlib.sha256(
+            "\n".join(str(record["id"]) for record in records).encode("utf-8")
+        ).hexdigest(),
+        "scenario": scenario,
+        "seed": config.project.seed,
+        "model": dataclasses.asdict(config.model),
+        "views": dataclasses.asdict(config.views),
+        "standardization": dataclasses.asdict(config.standardization),
+        "dtype": config.evaluation.external_feature_cache_dtype,
+    }
+
+
+def _external_cache_path(
+    config: AppConfig, spec: EvaluationDatasetSpec, identity: dict[str, Any]
+) -> Path:
+    serialized = json.dumps(identity, sort_keys=True, separators=(",", ":"))
+    key = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+    return Path(config.evaluation.external_feature_cache_dir) / spec.name / f"{key}.pt"
+
+
+@torch.inference_mode()
+def _load_or_create_external_features(
+    model: FrozenClipDetector,
+    config: AppConfig,
+    device: torch.device,
+    spec: EvaluationDatasetSpec,
+    scenario: str,
+    *,
+    max_samples: int | None,
+) -> dict[str, Any]:
+    """Load or atomically cache checkpoint-independent frozen scenario features."""
+    loader = _loader(config, spec, scenario, max_samples=max_samples)
+    dataset = loader.dataset
+    if not isinstance(dataset, ExternalEvaluationDataset):
+        raise TypeError("External feature cache received an unexpected dataset type.")
+    identity = _external_cache_identity(config, spec, scenario, dataset.records)
+    path = _external_cache_path(config, spec, identity)
+    if path.is_file():
+        payload = torch.load(path, map_location="cpu", weights_only=False)
+        if payload.get("identity") != identity:
+            raise RuntimeError(f"External feature cache identity mismatch: {path}")
+        LOGGER.info("Using external feature cache: %s", path)
+        return payload
+
+    dtype = (
+        torch.float16
+        if config.evaluation.external_feature_cache_dtype == "float16"
+        else torch.float32
+    )
+    final: list[torch.Tensor] = []
+    intermediate: list[torch.Tensor] = []
+    residual: list[torch.Tensor] = []
+    labels: list[torch.Tensor] = []
+    ids: list[str] = []
+    paths: list[str] = []
+    source_names: list[str] = []
+    for batch in tqdm(loader, desc=f"Cache {spec.name}/{scenario}"):
+        views = batch["views"].to(device, non_blocking=True)
+        with _autocast(config, device):
+            encoded = model.encode_views(views)
+        final.append(encoded.final.to(dtype=dtype, device="cpu"))
+        if encoded.intermediate is not None:
+            intermediate.append(encoded.intermediate.to(dtype=dtype, device="cpu"))
+        if encoded.residual_statistics is not None:
+            residual.append(
+                encoded.residual_statistics.to(dtype=dtype, device="cpu")
+            )
+        labels.append(batch["label"].float().cpu())
+        ids.extend(str(value) for value in batch["id"])
+        paths.extend(str(value) for value in batch["path"])
+        source_names.extend(str(value) for value in batch["source_name"])
+    payload = {
+        "identity": identity,
+        "final": torch.cat(final),
+        "intermediate": torch.cat(intermediate) if intermediate else None,
+        "residual_statistics": torch.cat(residual) if residual else None,
+        "label": torch.cat(labels),
+        "id": ids,
+        "path": paths,
+        "source_name": source_names,
+    }
+    atomic_torch_save(payload, path)
+    LOGGER.info("Saved external feature cache: %s", path)
+    return payload
 
 
 def _autocast(config: AppConfig, device: torch.device) -> Any:
@@ -272,6 +416,7 @@ def _extended_metrics(
     false_negative = int(np.sum((targets == 1) & (predictions == 0)))
     result.update(
         {
+            "count": int(targets.size),
             "accuracy": float(np.mean(targets == predictions)),
             "fake_recall": true_positive / max(1, true_positive + false_negative),
             "real_recall": true_negative / max(1, true_negative + false_positive),
@@ -312,18 +457,69 @@ def _evaluate_scenario(
     device: torch.device,
     spec: EvaluationDatasetSpec,
     scenario: str,
+    *,
+    calibrator: GlobalCalibrator | None = None,
+    max_samples: int | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     labels: list[float] = []
     probabilities: list[float] = []
     predictions: list[dict[str, Any]] = []
-    for batch in tqdm(_loader(config, spec, scenario), desc=f"Evaluate {spec.name}/{scenario}"):
-        views = batch["views"].to(device, non_blocking=True)
-        with _autocast(config, device):
-            output = model(views)
-        scores = torch.sigmoid(output.logits).float().cpu().tolist()
-        batch_labels = batch["label"].float().tolist()
+    if config.evaluation.external_feature_cache_enabled:
+        cached = _load_or_create_external_features(
+            model,
+            config,
+            device,
+            spec,
+            scenario,
+            max_samples=max_samples,
+        )
+        batch_source: Any = range(0, len(cached["id"]), config.evaluation.batch_size)
+    else:
+        cached = None
+        batch_source = _loader(config, spec, scenario, max_samples=max_samples)
+
+    for item in tqdm(batch_source, desc=f"Evaluate {spec.name}/{scenario}"):
+        if cached is None:
+            batch = item
+            views = batch["views"].to(device, non_blocking=True)
+            with _autocast(config, device):
+                output = model(views)
+            batch_labels = batch["label"].float().tolist()
+            batch_ids = batch["id"]
+            batch_paths = batch["path"]
+            batch_sources = batch["source_name"]
+        else:
+            start = int(item)
+            end = min(start + config.evaluation.batch_size, len(cached["id"]))
+            encoded = EncodedViews(
+                final=cached["final"][start:end].to(device, non_blocking=True),
+                intermediate=(
+                    cached["intermediate"][start:end].to(device, non_blocking=True)
+                    if cached["intermediate"] is not None
+                    else None
+                ),
+                residual_statistics=(
+                    cached["residual_statistics"][start:end].to(
+                        device, non_blocking=True
+                    )
+                    if cached["residual_statistics"] is not None
+                    else None
+                ),
+            )
+            with _autocast(config, device):
+                output = model.forward_encoded(encoded)
+            batch_labels = cached["label"][start:end].float().tolist()
+            batch_ids = cached["id"][start:end]
+            batch_paths = cached["path"][start:end]
+            batch_sources = cached["source_name"][start:end]
+        raw_scores = torch.sigmoid(output.logits).float().cpu().tolist()
+        calibrated_scores = (
+            calibrator.probabilities(output.logits).float().cpu().tolist()
+            if calibrator is not None
+            else raw_scores
+        )
         labels.extend(batch_labels)
-        probabilities.extend(scores)
+        probabilities.extend(calibrated_scores)
         predictions.extend(
             {
                 "id": record_id,
@@ -332,21 +528,32 @@ def _evaluate_scenario(
                 "source_name": source_name,
                 "scenario": scenario,
                 "pred": float(score),
+                **(
+                    {"raw_pred": float(raw_score)}
+                    if calibrator is not None
+                    else {}
+                ),
             }
-            for record_id, path, label, source_name, score in zip(
-                batch["id"], batch["path"], batch_labels, batch["source_name"], scores
+            for record_id, path, label, source_name, score, raw_score in zip(
+                batch_ids,
+                batch_paths,
+                batch_labels,
+                batch_sources,
+                calibrated_scores,
+                raw_scores,
             )
         )
+    threshold = calibrator.threshold if calibrator is not None else config.training.threshold
     metrics: dict[str, Any] = _extended_metrics(
-        labels, probabilities, config.training.threshold
+        labels, probabilities, threshold
     )
     metrics["source_groups"] = _source_group_metrics(
-        predictions, config.training.threshold
+        predictions, threshold
     )
     return metrics, predictions
 
 
-def evaluate_external(config: AppConfig, name: str) -> dict[str, Any]:
+def evaluate_external(config: AppConfig, name: str, *, fast: bool = False) -> dict[str, Any]:
     """Evaluate one prepared manifest without dataset-specific inference logic."""
     spec = dataset_spec(config, name)
     audit_path = Path(spec.audit_path)
@@ -366,22 +573,39 @@ def evaluate_external(config: AppConfig, name: str) -> dict[str, Any]:
     model.load_trainable_state_dict(checkpoint["trainable_model"])
     model.to(device).eval()
     seed_everything(config.project.seed)
+    checkpoint_sha256 = _file_sha256(checkpoint_path)
+    calibrator = load_global_calibrator(
+        config, checkpoint_path, checkpoint_sha256=checkpoint_sha256
+    )
 
-    scenarios = list(config.evaluation.scenarios)
-    if config.evaluation.enable_composed_scenarios:
+    scenarios = (
+        list(config.evaluation.fast_scenarios)
+        if fast
+        else list(config.evaluation.scenarios)
+    )
+    if not fast and config.evaluation.enable_composed_scenarios:
         scenarios.extend(config.evaluation.composed_scenarios)
+    max_samples = config.evaluation.fast_max_samples if fast else None
     scenario_results: dict[str, dict[str, Any]] = {}
     all_predictions: list[dict[str, Any]] = []
     for scenario in scenarios:
-        metrics, predictions = _evaluate_scenario(model, config, device, spec, scenario)
+        metrics, predictions = _evaluate_scenario(
+            model,
+            config,
+            device,
+            spec,
+            scenario,
+            calibrator=calibrator,
+            max_samples=max_samples,
+        )
         scenario_results[scenario] = metrics
         if config.evaluation.save_predictions:
             all_predictions.extend(predictions)
     clean_auroc = float(scenario_results.get("clean", {}).get("auroc", math.nan))
     single_aurocs = [
         float(scenario_results[item]["auroc"])
-        for item in config.evaluation.scenarios
-        if item != "clean"
+        for item in scenarios
+        if item != "clean" and item not in config.evaluation.composed_scenarios
     ]
     composed_aurocs = [
         float(scenario_results[item]["auroc"])
@@ -389,7 +613,8 @@ def evaluate_external(config: AppConfig, name: str) -> dict[str, Any]:
         if item in scenario_results
     ]
     result = {
-        "schema_version": 2,
+        "schema_version": 3,
+        "mode": "fast" if fast else "full",
         "dataset": {
             "name": spec.name,
             "repo_id": spec.repo_id,
@@ -400,11 +625,19 @@ def evaluate_external(config: AppConfig, name: str) -> dict[str, Any]:
         },
         "checkpoint": {
             "path": str(checkpoint_path),
-            "sha256": _file_sha256(checkpoint_path),
+            "sha256": checkpoint_sha256,
             "epoch": int(checkpoint["epoch"]),
             "global_step": int(checkpoint["global_step"]),
         },
-        "threshold": config.training.threshold,
+        "threshold": calibrator.threshold if calibrator else config.training.threshold,
+        "calibration": (
+            calibrator.to_metadata()
+            if calibrator is not None
+            else {"applied": False, "method": "none"}
+        ),
+        "evaluated_sample_count": int(
+            next(iter(scenario_results.values())).get("count", 0)
+        ),
         "scenarios": scenario_results,
         "summary": {
             "clean_auroc": clean_auroc,
@@ -428,13 +661,20 @@ def evaluate_external(config: AppConfig, name: str) -> dict[str, Any]:
             ),
         },
     }
+    results_path = Path(spec.results_path)
+    predictions_path = Path(spec.predictions_path)
+    if fast:
+        results_path = results_path.with_name(f"{results_path.stem}.fast{results_path.suffix}")
+        predictions_path = predictions_path.with_name(
+            f"{predictions_path.stem}.fast{predictions_path.suffix}"
+        )
     _atomic_write(
-        Path(spec.results_path),
+        results_path,
         (json.dumps(result, indent=2, sort_keys=True) + "\n").encode("utf-8"),
     )
     if config.evaluation.save_predictions:
         lines = "".join(json.dumps(item, sort_keys=True) + "\n" for item in all_predictions)
-        _atomic_write(Path(spec.predictions_path), lines.encode("utf-8"))
+        _atomic_write(predictions_path, lines.encode("utf-8"))
     if device.type == "cuda":
         torch.cuda.empty_cache()
     return result
@@ -443,8 +683,13 @@ def evaluate_external(config: AppConfig, name: str) -> dict[str, Any]:
 def _main(name: str, description: str) -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     parser = config_argument_parser(description)
+    parser.add_argument(
+        "--fast",
+        action="store_true",
+        help="Evaluate a deterministic balanced subset on representative severe scenarios.",
+    )
     args = parser.parse_args()
-    result = evaluate_external(load_config(args.config, args.set), name)
+    result = evaluate_external(load_config(args.config, args.set), name, fast=args.fast)
     LOGGER.info(
         "External evaluation completed: dataset=%s clean AUROC=%.6f.",
         name,
