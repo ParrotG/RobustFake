@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
@@ -18,7 +19,7 @@ class ConfigError(ValueError):
 @dataclass
 class ProjectConfig:
     seed: int = 2026
-    run_name: str = "clip_b16_multiview"
+    run_name: str = "clip_b16_multilayer_v3"
 
 
 @dataclass
@@ -28,11 +29,11 @@ class DataConfig:
     metadata_file: str = "metadata/manifest.parquet"
     source_config_file: str = "metadata/config.json"
     shard_cache_dir: str = "data/cache/ai_image_detection_shards"
-    output_dir: str = "data/processed/ai_image_detection_20k"
-    manifest_path: str = "data/processed/ai_image_detection_20k/manifest.jsonl"
-    audit_path: str = "data/processed/ai_image_detection_20k/audit.json"
-    state_path: str = "data/processed/ai_image_detection_20k/preparation_state.json"
-    nuisance_report_path: str = "data/processed/ai_image_detection_20k/nuisance_report.json"
+    output_dir: str = "data/processed/mixed_aigc_80k"
+    manifest_path: str = "data/processed/mixed_aigc_80k/manifest.jsonl"
+    audit_path: str = "data/processed/mixed_aigc_80k/audit.json"
+    state_path: str = "data/processed/mixed_aigc_80k/selection_state.json"
+    nuisance_report_path: str = "data/processed/mixed_aigc_80k/nuisance_report.json"
     hf_auth: str = "required"
     generators: list[str] = field(
         default_factory=lambda: [
@@ -88,11 +89,124 @@ class NuisanceAuditConfig:
     max_leaf_nodes: int = 15
     min_samples_leaf: int = 20
     permutation_repeats: int = 5
+    max_train_samples: int = 12_000
+    max_evaluation_samples: int = 4_000
+    feature_workers: int = 4
+
+
+@dataclass
+class MixedDataConfig:
+    """Configuration for the reproducible multi-source training pool."""
+
+    enabled: bool = True
+    output_dir: str = "data/processed/mixed_aigc_80k"
+    manifest_path: str = "data/processed/mixed_aigc_80k/manifest.jsonl"
+    audit_path: str = "data/processed/mixed_aigc_80k/audit.json"
+    state_path: str = "data/processed/mixed_aigc_80k/selection_state.json"
+    dedup_report_path: str = "data/processed/mixed_aigc_80k/dedup_report.json"
+    distribution_report_path: str = "data/processed/mixed_aigc_80k/distribution_report.json"
+    cache_dir: str = "data/cache/mixed_aigc_80k"
+    shanmuk_root: str = "data/processed/ai_image_detection_20k"
+    community_root: str = "data/processed/community_forensics_20k"
+    shanmuk_repo_id: str = "Shanmuk4622/ai-image-detection-dataset"
+    shanmuk_revision: str = "8f1f536676f96cbc58bffd520ed50d1e7b9e894a"
+    community_repo_id: str = "OwensLab/CommunityForensics-Small"
+    community_revision: str = "6c539a534c07917307c381f5af4053c6091b5278"
+    tiny_genimage_repo_id: str = "TheKernel01/Tiny-GenImage"
+    tiny_genimage_revision: str = "89c4fe9efd0ebc7ce5c7641ef57d578ccd639c69"
+    wildfake_repo_id: str = "hy2628982280/WildFake"
+    wildfake_revision: str = "18f53ff36ad9da60644039f0452b0e7b3907af6f"
+    wildfake_train_metadata_file: str = (
+        "split_train_test/csv_file/total_split/train_metadata.csv"
+    )
+    wildfake_train_metadata_sha256: str = (
+        "26c6eacf6a34b7c61e7a1a3230c97624f58f857553cb525fe7f95dfbd5858be5"
+    )
+    target_total: int = 80_000
+    target_real: int = 40_000
+    target_fake: int = 40_000
+    reserve_multiplier: float = 1.25
+    max_network_gb: float = 80.0
+    storage_warning_min_gb: float = 25.0
+    storage_warning_max_gb: float = 45.0
+    download_workers: int = 4
+    hash_workers: int = 4
+    hash_checkpoint_every: int = 5000
+    checkpoint_every: int = 100
+    network_max_retries: int = 5
+    network_retry_base_seconds: float = 2.0
+    request_timeout_seconds: float = 60.0
+    max_image_pixels: int = 50_000_000
+    phash_size: int = 16
+    phash_distance: int = 8
+    dhash_distance: int = 8
+    crop_phash_distance: int = 8
+    source_quotas: dict[str, dict[str, dict[str, int]]] = field(
+        default_factory=lambda: {
+            "shanmuk": {
+                "train": {"0": 4000, "1": 4000},
+                "val_id": {"0": 1000, "1": 1000},
+                "val_dg": {"0": 0, "1": 0},
+            },
+            "wildfake": {
+                "train": {"0": 9000, "1": 9000},
+                "val_id": {"0": 0, "1": 0},
+                "val_dg": {"0": 4000, "1": 2000},
+            },
+            "community_forensics": {
+                "train": {"0": 13000, "1": 13000},
+                "val_id": {"0": 1000, "1": 2000},
+                "val_dg": {"0": 0, "1": 1000},
+            },
+            "tiny_genimage": {
+                "train": {"0": 6000, "1": 6000},
+                "val_id": {"0": 2000, "1": 1000},
+                "val_dg": {"0": 0, "1": 1000},
+            },
+        }
+    )
+    external_deny_manifests: list[str] = field(
+        default_factory=lambda: [
+            "data/evaluation/wildfake_official/manifest.jsonl",
+            "data/evaluation/wildfake_broad_6k/manifest.jsonl",
+            "data/evaluation/sid_set_4k/manifest.jsonl",
+        ]
+    )
+    wildfake_train_real_sources: list[str] = field(
+        default_factory=lambda: ["laion5b", "imagenet", "ffhq", "celebahq"]
+    )
+    wildfake_dg_real_sources: list[str] = field(
+        default_factory=lambda: ["afhq", "church"]
+    )
+    wildfake_dg_fake_architectures: list[str] = field(
+        default_factory=lambda: ["DDPM", "GALIP", "MAGE"]
+    )
+    global_heldout_generator_aliases: list[str] = field(
+        default_factory=lambda: ["ddpm", "galip", "mage", "wukong"]
+    )
+    community_subset_weights: dict[str, float] = field(
+        default_factory=lambda: {"Systematic": 0.50, "Manual": 0.40, "Commercial": 0.10}
+    )
+    community_architecture_weights: dict[str, float] = field(
+        default_factory=lambda: {"LatDiff": 0.50, "GAN": 0.20, "PixDiff": 0.15, "other": 0.15}
+    )
+    community_systematic_model_cap: int = 8
+    community_other_model_cap: int = 200
+    tiny_expected_rows: int = 35_000
+    tiny_expected_license: str = "cc-by-nc-sa-4.0"
+    tiny_generators: list[str] = field(
+        default_factory=lambda: [
+            "ADM", "BigGAN", "GLIDE", "Midjourney", "SD14", "SD15", "VQDM", "Wukong"
+        ]
+    )
+    tiny_allowed_empty_generators: list[str] = field(default_factory=lambda: ["SD14"])
 
 
 @dataclass
 class ViewsConfig:
     input_size: int = 224
+    global_crop_scale_min: float = 0.90
+    global_crop_scale_max: float = 1.0
     local_scale_min: float = 0.50
     local_scale_max: float = 0.90
     padding_color: int = 127
@@ -123,13 +237,19 @@ class AugmentationsConfig:
 
 @dataclass
 class ModelConfig:
-    backbone_name: str = "ViT-B-16"
+    backbone_name: str = "ViT-B-16-quickgelu"
     pretrained: str = "openai"
     embedding_dim: int = 512
+    intermediate_layers: list[int] = field(default_factory=list)
+    intermediate_dim: int = 768
     head_dim: int = 256
     projection_dim: int = 128
-    dropout: float = 0.20
-    residual_enabled: bool = True
+    dropout: float = 0.10
+    residual_statistics_enabled: bool = False
+    residual_statistics_dim: int = 24
+    residual_hidden_dim: int = 64
+    # Legacy CNN residual settings retained for compatibility with the xyl API.
+    residual_enabled: bool = False
     residual_channels: int = 16
     residual_embedding_dim: int = 64
     residual_head_dim: int = 64
@@ -138,21 +258,22 @@ class ModelConfig:
 @dataclass
 class LossConfig:
     classification_weight: float = 1.0
-    consistency_weight: float = 0.5
-    contrastive_weight: float = 0.1
+    consistency_weight: float = 0.1
+    consistency_rampup_epochs: int = 3
+    contrastive_weight: float = 0.05
     contrastive_temperature: float = 0.10
 
 
 @dataclass
 class TrainingConfig:
-    epochs: int = 12
-    batch_size: int = 16
-    gradient_accumulation_steps: int = 2
-    learning_rate: float = 3e-4
-    weight_decay: float = 1e-4
-    warmup_fraction: float = 0.10
-    num_workers: int = 8
-    prefetch_factor: int = 2
+    epochs: int = 8
+    batch_size: int = 64
+    gradient_accumulation_steps: int = 1
+    learning_rate: float = 1e-4
+    weight_decay: float = 1e-3
+    warmup_fraction: float = 0.05
+    num_workers: int = 12
+    prefetch_factor: int = 1
     persistent_workers: bool = False
     amp: bool = True
     amp_dtype: str = "fp16"
@@ -230,6 +351,21 @@ class PerspectiveConfig:
 
 
 @dataclass
+class FeatureCacheConfig:
+    """Settings for deterministic frozen-backbone feature precomputation."""
+
+    root_dir: str = "data/processed/feature_cache"
+    use_for_training: bool = False
+    train_variants: int = 2
+    shard_size: int = 2048
+    batch_size: int = 64
+    num_workers: int = 12
+    prefetch_factor: int = 1
+    pin_memory: bool = True
+    dtype: str = "float16"
+
+
+@dataclass
 class OfficialEvaluationConfig:
     repo_id: str = "hy2628982280/WildFake"
     revision: str = "master"
@@ -237,7 +373,6 @@ class OfficialEvaluationConfig:
     manifest_path: str = "data/evaluation/wildfake_official/manifest.jsonl"
     audit_path: str = "data/evaluation/wildfake_official/audit.json"
     metadata_dir: str = "data/cache/wildfake_official_metadata"
-    checkpoint_path: str = "artifacts/runs/clip_b16_multiview/best.pt"
     results_path: str = "artifacts/evaluations/wildfake_official/results.json"
     predictions_path: str = "artifacts/evaluations/wildfake_official/predictions.jsonl"
     dalle_metadata_file: str = "label_csv_files/dalle3.csv"
@@ -253,10 +388,18 @@ class OfficialEvaluationConfig:
     request_timeout_seconds: float = 60.0
     network_max_retries: int = 5
     network_retry_backoff: float = 1.0
+
+
+@dataclass
+class EvaluationConfig:
+    """Settings shared by every manifest-backed external evaluation."""
+
+    checkpoint_path: str = "artifacts/runs/clip_b16_multilayer_v3/best.pt"
     batch_size: int = 32
     num_workers: int = 8
     prefetch_factor: int = 2
     save_predictions: bool = True
+    enable_composed_scenarios: bool = True
     scenarios: list[str] = field(
         default_factory=lambda: [
             "clean",
@@ -276,6 +419,100 @@ class OfficialEvaluationConfig:
             "center_crop_0.80",
         ]
     )
+    composed_scenarios: list[str] = field(
+        default_factory=lambda: [
+            "combo_social_resize_0.5_jpeg_70",
+            "combo_repost_jpeg_90_resize_0.5_jpeg_70",
+            "combo_crop_0.80_resize_0.5_jpeg_70",
+            "combo_blur_1.0_resize_0.5_jpeg_50",
+            "combo_edit_color_0.20_noise_0.02_jpeg_70",
+            "combo_stress_crop_0.80_blur_1.0_resize_0.25_jpeg_30",
+        ]
+    )
+
+
+@dataclass
+class WildFakeEvaluationConfig:
+    """Preparation and artifact locations for the broad WildFake sample."""
+
+    repo_id: str = "hy2628982280/WildFake"
+    revision: str = "master"
+    metadata_file: str = "split_train_test/csv_file/total_split/test_metadata.csv"
+    metadata_sha256: str = "0cec85fcec02e6e262f5b9726560b0355ab1293a30d29f063bf10a3c9d1b16c3"
+    metadata_dir: str = "data/cache/wildfake_broad_metadata"
+    integrity_cache_path: str = "data/cache/wildfake_broad_metadata/archive_integrity.json"
+    output_dir: str = "data/evaluation/wildfake_broad_6k"
+    manifest_path: str = "data/evaluation/wildfake_broad_6k/manifest.jsonl"
+    audit_path: str = "data/evaluation/wildfake_broad_6k/audit.json"
+    state_path: str = "data/evaluation/wildfake_broad_6k/preparation_state.json"
+    results_path: str = "artifacts/evaluations/wildfake_broad_6k/results.json"
+    predictions_path: str = "artifacts/evaluations/wildfake_broad_6k/predictions.jsonl"
+    target_real: int = 3_000
+    target_fake: int = 3_000
+    fake_families: list[str] = field(
+        default_factory=lambda: ["GAN_based", "Diffusion_based", "Other_based"]
+    )
+    fake_architectures: list[str] = field(
+        default_factory=lambda: [
+            "BigGAN",
+            "DF-GAN",
+            "GALIP",
+            "GigaGAN",
+            "starGAN",
+            "styleGAN",
+            "ADM",
+            "DDIM",
+            "DDPM",
+            "Imagen",
+            "VQDM",
+            "MAE",
+            "MAGE",
+            "VQGAN",
+            "VQVAE",
+        ]
+    )
+    real_sources: list[str] = field(
+        default_factory=lambda: ["afhq", "celebahq", "church", "ffhq", "imagenet", "laion5b"]
+    )
+    excluded_source_paths: list[str] = field(
+        default_factory=lambda: [
+            "GAN_based/Advanced/GigaGAN/fake_images/18598.png",
+        ]
+    )
+    detect_extreme_zip_compression: bool = True
+    extreme_zip_compression_ratio: float = 0.02
+    download_workers: int = 4
+    checkpoint_every: int = 100
+    request_timeout_seconds: float = 60.0
+    network_max_retries: int = 5
+    network_retry_backoff: float = 1.0
+    max_download_gb: float = 12.0
+
+
+@dataclass
+class SidEvaluationConfig:
+    """Preparation and artifact locations for the SID-Set validation sample."""
+
+    repo_id: str = "saberzl/SID_Set"
+    revision: str = "dc03ead57929879319ce30a82bfcfb8d317b10bd"
+    split: str = "validation"
+    shard_prefix: str = "data/validation-"
+    shard_cache_dir: str = "data/cache/sid_set_validation_shards"
+    output_dir: str = "data/evaluation/sid_set_4k"
+    manifest_path: str = "data/evaluation/sid_set_4k/manifest.jsonl"
+    audit_path: str = "data/evaluation/sid_set_4k/audit.json"
+    state_path: str = "data/evaluation/sid_set_4k/preparation_state.json"
+    results_path: str = "artifacts/evaluations/sid_set_4k/results.json"
+    predictions_path: str = "artifacts/evaluations/sid_set_4k/predictions.jsonl"
+    hf_auth: str = "auto"
+    target_real: int = 2_000
+    target_fake: int = 2_000
+    download_workers: int = 3
+    checkpoint_every_shards: int = 1
+    network_max_retries: int = 5
+    network_retry_base_seconds: float = 5.0
+    max_download_gb: float = 18.0
+    max_shard_cache_gb: float = 2.0
 
 
 @dataclass
@@ -284,6 +521,7 @@ class AppConfig:
     data: DataConfig = field(default_factory=DataConfig)
     standardization: StandardizationConfig = field(default_factory=StandardizationConfig)
     nuisance_audit: NuisanceAuditConfig = field(default_factory=NuisanceAuditConfig)
+    mixed_data: MixedDataConfig = field(default_factory=MixedDataConfig)
     views: ViewsConfig = field(default_factory=ViewsConfig)
     augmentations: AugmentationsConfig = field(default_factory=AugmentationsConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
@@ -293,24 +531,152 @@ class AppConfig:
     provenance: ProvenanceConfig = field(default_factory=ProvenanceConfig)
     watermark: WatermarkConfig = field(default_factory=WatermarkConfig)
     perspective: PerspectiveConfig = field(default_factory=PerspectiveConfig)
+    feature_cache: FeatureCacheConfig = field(default_factory=FeatureCacheConfig)
     official_evaluation: OfficialEvaluationConfig = field(
         default_factory=OfficialEvaluationConfig
     )
+    evaluation: EvaluationConfig = field(default_factory=EvaluationConfig)
+    wildfake_evaluation: WildFakeEvaluationConfig = field(
+        default_factory=WildFakeEvaluationConfig
+    )
+    sid_evaluation: SidEvaluationConfig = field(default_factory=SidEvaluationConfig)
 
     def validate(self) -> None:
         """Validate cross-field constraints before any expensive work starts."""
         if self.data.repo_id != "Shanmuk4622/ai-image-detection-dataset":
             raise ConfigError("Only Shanmuk4622/ai-image-detection-dataset is supported.")
-        if self.model.backbone_name != "ViT-B-16":
-            raise ConfigError("Only the ViT-B-16 backbone is supported in v1.")
+        mixed = self.mixed_data
+        if mixed.enabled:
+            if (
+                self.data.output_dir != mixed.output_dir
+                or self.data.manifest_path != mixed.manifest_path
+                or self.data.audit_path != mixed.audit_path
+                or self.data.state_path != mixed.state_path
+            ):
+                raise ConfigError("data paths must match mixed_data paths when mixed preparation is enabled.")
+            if any(
+                revision in {"main", "master"} or len(revision) != 40
+                for revision in (
+                    mixed.shanmuk_revision,
+                    mixed.community_revision,
+                    mixed.tiny_genimage_revision,
+                    mixed.wildfake_revision,
+                )
+            ):
+                raise ConfigError("Every mixed-data source must use a 40-character commit SHA.")
+            if mixed.target_total != mixed.target_real + mixed.target_fake:
+                raise ConfigError("Mixed-data class targets must sum to target_total.")
+            if mixed.target_real != mixed.target_fake:
+                raise ConfigError("Mixed-data real and fake targets must be equal.")
+            configured = Counter()
+            for source, splits in mixed.source_quotas.items():
+                if source not in {"shanmuk", "wildfake", "community_forensics", "tiny_genimage"}:
+                    raise ConfigError(f"Unsupported mixed-data source quota: {source}")
+                if set(splits) != {"train", "val_id", "val_dg"}:
+                    raise ConfigError("Each mixed-data source must define all three splits.")
+                for split, labels in splits.items():
+                    if set(labels) != {"0", "1"} or any(int(value) < 0 for value in labels.values()):
+                        raise ConfigError("Mixed-data quotas require non-negative string label keys 0 and 1.")
+                    for label, value in labels.items():
+                        configured[(split, label)] += int(value)
+            expected = {
+                ("train", "0"): 32_000, ("train", "1"): 32_000,
+                ("val_id", "0"): 4_000, ("val_id", "1"): 4_000,
+                ("val_dg", "0"): 4_000, ("val_dg", "1"): 4_000,
+            }
+            if dict(configured) != expected:
+                raise ConfigError("Mixed-data quotas must produce the locked 64k/8k/8k split table.")
+            locked_source_quotas = {
+                "shanmuk": {
+                    "train": {"0": 4000, "1": 4000},
+                    "val_id": {"0": 1000, "1": 1000},
+                    "val_dg": {"0": 0, "1": 0},
+                },
+                "wildfake": {
+                    "train": {"0": 9000, "1": 9000},
+                    "val_id": {"0": 0, "1": 0},
+                    "val_dg": {"0": 4000, "1": 2000},
+                },
+                "community_forensics": {
+                    "train": {"0": 13000, "1": 13000},
+                    "val_id": {"0": 1000, "1": 2000},
+                    "val_dg": {"0": 0, "1": 1000},
+                },
+                "tiny_genimage": {
+                    "train": {"0": 6000, "1": 6000},
+                    "val_id": {"0": 2000, "1": 1000},
+                    "val_dg": {"0": 0, "1": 1000},
+                },
+            }
+            if mixed.source_quotas != locked_source_quotas:
+                raise ConfigError("Mixed-data per-source quotas must match the locked 80k table.")
+            if mixed.reserve_multiplier < 1 or mixed.max_network_gb <= 0:
+                raise ConfigError("Mixed-data reserve and network limits are invalid.")
+            if (
+                mixed.download_workers <= 0
+                or mixed.hash_workers <= 0
+                or mixed.hash_checkpoint_every <= 0
+                or mixed.checkpoint_every <= 0
+            ):
+                raise ConfigError("Mixed-data concurrency and checkpoint settings must be positive.")
+            if (
+                mixed.network_max_retries < 0
+                or mixed.network_retry_base_seconds <= 0
+                or mixed.request_timeout_seconds <= 0
+            ):
+                raise ConfigError("Mixed-data network retry settings are invalid.")
+            if (
+                mixed.storage_warning_min_gb <= 0
+                or mixed.storage_warning_max_gb < mixed.storage_warning_min_gb
+                or mixed.max_image_pixels <= 0
+                or mixed.phash_size <= 0
+                or mixed.phash_distance < 0
+                or mixed.dhash_distance < 0
+                or mixed.crop_phash_distance < mixed.phash_distance
+            ):
+                raise ConfigError("Mixed-data storage and image safety settings are invalid.")
+            if len(set(mixed.tiny_generators)) != 8 or "Wukong" not in mixed.tiny_generators:
+                raise ConfigError("Tiny-GenImage must define eight unique generators including Wukong.")
+            if not set(mixed.tiny_allowed_empty_generators) < set(mixed.tiny_generators):
+                raise ConfigError("Tiny-GenImage empty-generator exceptions must be a strict subset.")
+            if not mixed.tiny_expected_license:
+                raise ConfigError("Tiny-GenImage expected license must be configured.")
+        if self.model.backbone_name not in {"ViT-B-16", "ViT-B-16-quickgelu"}:
+            raise ConfigError("Only ViT-B-16 variants are currently supported.")
         if self.model.pretrained != "openai":
             raise ConfigError("Only the OpenAI pretrained weights are supported in v1.")
         if self.model.embedding_dim != 512:
             raise ConfigError("ViT-B-16 requires model.embedding_dim=512.")
+        if self.model.intermediate_dim != 768:
+            raise ConfigError("ViT-B-16 intermediate tokens require model.intermediate_dim=768.")
+        if self.model.residual_statistics_dim != 24:
+            raise ConfigError(
+                "The fixed residual-statistics extractor requires model.residual_statistics_dim=24."
+            )
+        if self.model.residual_hidden_dim <= 0:
+            raise ConfigError("model.residual_hidden_dim must be positive.")
+        if (
+            len(set(self.model.intermediate_layers)) != len(self.model.intermediate_layers)
+            or self.model.intermediate_layers != sorted(self.model.intermediate_layers)
+            or any(index < 0 or index >= 12 for index in self.model.intermediate_layers)
+        ):
+            raise ConfigError(
+                "model.intermediate_layers must contain unique ascending ViT-B/16 block indices in [0, 11]."
+            )
         if self.views.input_size != 224:
             raise ConfigError("ViT-B-16 currently requires views.input_size=224.")
-        if not 0 < self.views.local_scale_min <= self.views.local_scale_max <= 1:
-            raise ConfigError("Local view scales must satisfy 0 < min <= max <= 1.")
+        if not (
+            0
+            < self.views.local_scale_min
+            <= self.views.local_scale_max
+            <= self.views.global_crop_scale_min
+            <= self.views.global_crop_scale_max
+            <= 1
+        ):
+            raise ConfigError(
+                "View scales must satisfy 0 < local min <= local max <= "
+                "global min <= global max <= 1."
+            )
         if not self.data.revision:
             raise ConfigError("data.revision must pin a dataset commit.")
         if len(self.data.generators) != 6 or len(set(self.data.generators)) != 6:
@@ -367,18 +733,22 @@ class AppConfig:
             raise ConfigError("Nuisance classifier limits are invalid.")
         if self.nuisance_audit.learning_rate <= 0 or self.nuisance_audit.permutation_repeats <= 0:
             raise ConfigError("Nuisance classifier settings must be positive.")
+        if (
+            self.nuisance_audit.max_train_samples <= 0
+            or self.nuisance_audit.max_evaluation_samples <= 0
+            or self.nuisance_audit.feature_workers <= 0
+        ):
+            raise ConfigError("Nuisance classifier sampling and worker limits must be positive.")
         if self.training.batch_size <= 0 or self.training.gradient_accumulation_steps <= 0:
             raise ConfigError("Batch size and gradient accumulation must be positive.")
+        if self.training.epochs <= 0 or self.training.learning_rate <= 0:
+            raise ConfigError("Epoch count and learning rate must be positive.")
+        if self.training.weight_decay < 0 or not 0 <= self.training.warmup_fraction < 1:
+            raise ConfigError("Weight decay must be non-negative and warmup fraction in [0, 1).")
         if self.training.num_workers < 0 or self.training.prefetch_factor <= 0:
             raise ConfigError("Worker count must be non-negative and prefetch factor positive.")
         if self.training.amp_dtype not in {"fp16", "bf16"}:
             raise ConfigError("training.amp_dtype must be fp16 or bf16.")
-        if (
-            self.model.residual_channels <= 0
-            or self.model.residual_embedding_dim <= 0
-            or self.model.residual_head_dim <= 0
-        ):
-            raise ConfigError("Residual branch dimensions must be positive.")
         if self.provenance.max_files <= 0 or self.provenance.c2pa_tool_timeout_seconds <= 0:
             raise ConfigError("Provenance limits must be positive.")
         watermark = self.watermark
@@ -431,6 +801,24 @@ class AppConfig:
             raise ConfigError("perspective.fisheye_score_threshold must be in (0, 1].")
         if not 0 < perspective.fisheye_curvature_threshold < 1:
             raise ConfigError("perspective.fisheye_curvature_threshold must be in (0, 1).")
+        cache = self.feature_cache
+        if cache.train_variants <= 0 or cache.shard_size <= 0 or cache.batch_size <= 0:
+            raise ConfigError("Feature-cache variants, shard size, and batch size must be positive.")
+        if cache.num_workers < 0 or cache.prefetch_factor <= 0:
+            raise ConfigError("Feature-cache worker count must be non-negative and prefetch factor positive.")
+        if cache.dtype not in {"float16", "float32"}:
+            raise ConfigError("feature_cache.dtype must be float16 or float32.")
+        if self.loss.consistency_rampup_epochs < 0:
+            raise ConfigError("loss.consistency_rampup_epochs must be non-negative.")
+        if any(
+            value < 0
+            for value in (
+                self.loss.classification_weight,
+                self.loss.consistency_weight,
+                self.loss.contrastive_weight,
+            )
+        ) or self.loss.contrastive_temperature <= 0:
+            raise ConfigError("Loss weights must be non-negative and temperature positive.")
         official = self.official_evaluation
         if official.repo_id != "hy2628982280/WildFake":
             raise ConfigError("Only hy2628982280/WildFake is supported for official evaluation.")
@@ -442,10 +830,6 @@ class AppConfig:
             raise ConfigError("Official evaluation network settings are invalid.")
         if official.network_retry_backoff <= 0:
             raise ConfigError("Official evaluation retry backoff must be positive.")
-        if official.batch_size <= 0 or official.num_workers < 0:
-            raise ConfigError("Official evaluation loader settings are invalid.")
-        if official.prefetch_factor <= 0:
-            raise ConfigError("Official evaluation prefetch factor must be positive.")
         supported_scenarios = {
             "clean",
             "jpeg_90",
@@ -463,12 +847,65 @@ class AppConfig:
             "color_jitter_0.20",
             "center_crop_0.80",
         }
-        if not official.scenarios or not set(official.scenarios) <= supported_scenarios:
-            raise ConfigError("Official evaluation contains an unsupported scenario.")
-        if "clean" not in official.scenarios:
-            raise ConfigError("Official evaluation scenarios must include clean.")
-        if len(set(official.scenarios)) != len(official.scenarios):
-            raise ConfigError("Official evaluation scenarios must not contain duplicates.")
+        evaluation = self.evaluation
+        if evaluation.batch_size <= 0 or evaluation.num_workers < 0:
+            raise ConfigError("External evaluation loader settings are invalid.")
+        if evaluation.prefetch_factor <= 0:
+            raise ConfigError("External evaluation prefetch factor must be positive.")
+        all_supported_scenarios = supported_scenarios | {
+            "combo_social_resize_0.5_jpeg_70",
+            "combo_repost_jpeg_90_resize_0.5_jpeg_70",
+            "combo_crop_0.80_resize_0.5_jpeg_70",
+            "combo_blur_1.0_resize_0.5_jpeg_50",
+            "combo_edit_color_0.20_noise_0.02_jpeg_70",
+            "combo_stress_crop_0.80_blur_1.0_resize_0.25_jpeg_30",
+        }
+        configured_scenarios = evaluation.scenarios + evaluation.composed_scenarios
+        if not evaluation.scenarios or not set(configured_scenarios) <= all_supported_scenarios:
+            raise ConfigError("External evaluation contains an unsupported scenario.")
+        if "clean" not in evaluation.scenarios:
+            raise ConfigError("External evaluation scenarios must include clean.")
+        if len(set(configured_scenarios)) != len(configured_scenarios):
+            raise ConfigError("External evaluation scenarios must not contain duplicates.")
+        broad = self.wildfake_evaluation
+        if broad.repo_id != "hy2628982280/WildFake":
+            raise ConfigError("The broad evaluation supports only hy2628982280/WildFake.")
+        if broad.target_real <= 0 or broad.target_fake <= 0:
+            raise ConfigError("Broad WildFake class targets must be positive.")
+        if broad.download_workers <= 0 or broad.checkpoint_every <= 0:
+            raise ConfigError("Broad WildFake concurrency and checkpoint settings must be positive.")
+        if broad.max_download_gb <= 0 or broad.request_timeout_seconds <= 0:
+            raise ConfigError("Broad WildFake download limits must be positive.")
+        if broad.network_max_retries < 0 or broad.network_retry_backoff <= 0:
+            raise ConfigError("Broad WildFake retry settings are invalid.")
+        if not broad.fake_families or not broad.fake_architectures or not broad.real_sources:
+            raise ConfigError("Broad WildFake strata must not be empty.")
+        if len(set(broad.excluded_source_paths)) != len(broad.excluded_source_paths):
+            raise ConfigError("Broad WildFake excluded source paths must be unique.")
+        if any(
+            not path or path.startswith("/") or ".." in Path(path).parts
+            for path in broad.excluded_source_paths
+        ):
+            raise ConfigError("Broad WildFake excluded source paths must be safe relative paths.")
+        if not 0 < broad.extreme_zip_compression_ratio <= 0.10:
+            raise ConfigError(
+                "Broad WildFake extreme ZIP compression ratio must be in (0, 0.10]."
+            )
+        sid = self.sid_evaluation
+        if sid.repo_id != "saberzl/SID_Set" or not sid.revision:
+            raise ConfigError("SID evaluation requires a pinned saberzl/SID_Set revision.")
+        if sid.split != "validation":
+            raise ConfigError("SID evaluation currently supports only the validation split.")
+        if sid.hf_auth not in {"auto", "required", "disabled"}:
+            raise ConfigError("sid_evaluation.hf_auth must be auto, required, or disabled.")
+        if sid.target_real <= 0 or sid.target_fake <= 0:
+            raise ConfigError("SID evaluation class targets must be positive.")
+        if sid.download_workers <= 0 or sid.checkpoint_every_shards <= 0:
+            raise ConfigError("SID evaluation concurrency and checkpoint settings must be positive.")
+        if sid.max_download_gb <= 0 or sid.max_shard_cache_gb <= 0:
+            raise ConfigError("SID evaluation download limits must be positive.")
+        if sid.network_max_retries < 0 or sid.network_retry_base_seconds <= 0:
+            raise ConfigError("SID evaluation retry settings are invalid.")
 
     def to_dict(self) -> dict[str, Any]:
         """Return a serialization-safe representation."""
@@ -480,6 +917,7 @@ _SECTIONS: dict[str, type[Any]] = {
     "data": DataConfig,
     "standardization": StandardizationConfig,
     "nuisance_audit": NuisanceAuditConfig,
+    "mixed_data": MixedDataConfig,
     "views": ViewsConfig,
     "augmentations": AugmentationsConfig,
     "model": ModelConfig,
@@ -489,7 +927,11 @@ _SECTIONS: dict[str, type[Any]] = {
     "provenance": ProvenanceConfig,
     "watermark": WatermarkConfig,
     "perspective": PerspectiveConfig,
+    "feature_cache": FeatureCacheConfig,
     "official_evaluation": OfficialEvaluationConfig,
+    "evaluation": EvaluationConfig,
+    "wildfake_evaluation": WildFakeEvaluationConfig,
+    "sid_evaluation": SidEvaluationConfig,
 }
 
 

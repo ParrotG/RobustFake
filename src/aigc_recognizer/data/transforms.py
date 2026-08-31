@@ -54,12 +54,26 @@ class RobustPairTransform:
     def _geometries(self, image: Image.Image, rng: random.Random) -> tuple[Geometry, Geometry]:
         interpolation = self._interpolation(rng)
         width, height = image.size
-        fraction = rng.uniform(self.views.local_scale_min, self.views.local_scale_max)
-        side = max(1, round(min(width, height) * fraction))
-        left = rng.randint(0, max(0, width - side))
-        top = rng.randint(0, max(0, height - side))
-        return Geometry(None, interpolation), Geometry(
-            (left, top, left + side, top + side), interpolation
+
+        def square_crop(scale_min: float, scale_max: float) -> Geometry:
+            fraction = rng.uniform(scale_min, scale_max)
+            side = max(1, round(min(width, height) * fraction))
+            left = rng.randint(0, max(0, width - side))
+            top = rng.randint(0, max(0, height - side))
+            return Geometry((left, top, left + side, top + side), interpolation)
+
+        # Both views crop every source to a square before resize. In particular,
+        # the global view must not expose source aspect ratio through constant
+        # letterbox padding, which is strongly correlated with the label in the
+        # current multi-source pool. The wider global scale retains substantially
+        # more context than the local view while applying the same label-agnostic
+        # geometry to real and generated images.
+        return (
+            square_crop(
+                self.views.global_crop_scale_min,
+                self.views.global_crop_scale_max,
+            ),
+            square_crop(self.views.local_scale_min, self.views.local_scale_max),
         )
 
     def _render(self, image: Image.Image, geometry: Geometry) -> Image.Image:
