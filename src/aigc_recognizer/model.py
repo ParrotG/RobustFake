@@ -12,6 +12,90 @@ from torch.nn import functional as F
 from aigc_recognizer.config import ModelConfig
 
 
+RESIDUAL_STATISTICS_VERSION = 1
+
+
+class ResidualStatisticsExtractor(nn.Module):
+    """Extract compact fixed high-pass statistics from normalized RGB views."""
+
+    output_dim = 24
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.register_buffer(
+            "clip_mean",
+            torch.tensor((0.48145466, 0.4578275, 0.40821073)).view(1, 3, 1, 1),
+            persistent=False,
+        )
+        self.register_buffer(
+            "clip_std",
+            torch.tensor((0.26862954, 0.26130258, 0.27577711)).view(1, 3, 1, 1),
+            persistent=False,
+        )
+        kernels = torch.tensor(
+            [
+                [[0.0, 1.0, 0.0], [1.0, -4.0, 1.0], [0.0, 1.0, 0.0]],
+                [[-1.0, 0.0, 1.0], [-2.0, 0.0, 2.0], [-1.0, 0.0, 1.0]],
+                [[-1.0, -2.0, -1.0], [0.0, 0.0, 0.0], [1.0, 2.0, 1.0]],
+                [[1.0, -1.0, 1.0], [-1.0, 1.0, -1.0], [1.0, -1.0, 1.0]],
+            ],
+            dtype=torch.float32,
+        ).unsqueeze(1)
+        kernels[1:3].div_(8.0)
+        kernels[0].div_(4.0)
+        kernels[3].div_(9.0)
+        self.register_buffer("grayscale_kernels", kernels, persistent=False)
+        self.register_buffer(
+            "laplacian_kernel", kernels[:1].repeat(3, 1, 1, 1), persistent=False
+        )
+
+    @staticmethod
+    def _moments(residuals: torch.Tensor) -> torch.Tensor:
+        flattened = residuals.flatten(2)
+        absolute_mean = flattened.abs().mean(dim=-1)
+        standard_deviation = flattened.std(dim=-1, unbiased=False)
+        root_mean_square = flattened.square().mean(dim=-1).sqrt()
+        fourth_root_moment = flattened.pow(4).mean(dim=-1).clamp_min(1e-12).pow(0.25)
+        return torch.stack(
+            [absolute_mean, standard_deviation, root_mean_square, fourth_root_moment],
+            dim=-1,
+        ).flatten(1)
+
+    def forward(self, views: torch.Tensor) -> torch.Tensor:
+        """Return 24 statistics per view for a [batch, views, C, H, W] tensor."""
+        if views.ndim != 5 or views.shape[2] != 3:
+            raise ValueError("Residual statistics require [batch, views, 3, H, W] input.")
+        batch_size, view_count = views.shape[:2]
+        images = views.flatten(0, 1).float()
+        images = (images * self.clip_std + self.clip_mean).clamp(0.0, 1.0)
+        grayscale = (
+            0.2989 * images[:, :1]
+            + 0.5870 * images[:, 1:2]
+            + 0.1140 * images[:, 2:3]
+        )
+        grayscale = F.pad(grayscale, (1, 1, 1, 1), mode="reflect")
+        directional = F.conv2d(grayscale, self.grayscale_kernels)
+        directional_statistics = self._moments(directional)
+
+        padded_rgb = F.pad(images, (1, 1, 1, 1), mode="reflect")
+        channel_laplacian = F.conv2d(
+            padded_rgb, self.laplacian_kernel, groups=3
+        ).flatten(2)
+        channel_statistics = torch.cat(
+            [
+                channel_laplacian.abs().mean(dim=-1),
+                channel_laplacian.std(dim=-1, unbiased=False),
+            ],
+            dim=-1,
+        )
+        horizontal = (grayscale[..., :, 1:] - grayscale[..., :, :-1]).abs().mean((2, 3))
+        vertical = (grayscale[..., 1:, :] - grayscale[..., :-1, :]).abs().mean((2, 3))
+        statistics = torch.cat(
+            [directional_statistics, channel_statistics, horizontal, vertical], dim=-1
+        )
+        return statistics.reshape(batch_size, view_count, self.output_dim)
+
+
 @dataclass
 class DetectorOutput:
     """Outputs required for classification and contrastive training."""
@@ -27,6 +111,7 @@ class EncodedViews:
 
     final: torch.Tensor
     intermediate: torch.Tensor | None = None
+    residual_statistics: torch.Tensor | None = None
 
 
 class FrozenClipDetector(nn.Module):
@@ -54,7 +139,21 @@ class FrozenClipDetector(nn.Module):
             self.layer_gate = None
             self.register_parameter("layer_bias", None)
 
-        aggregate_dim = config.embedding_dim * 2
+        if config.residual_statistics_enabled:
+            self.residual_extractor = ResidualStatisticsExtractor()
+            self.residual_branch = nn.Sequential(
+                nn.LayerNorm(config.residual_statistics_dim * 2),
+                nn.Linear(config.residual_statistics_dim * 2, config.residual_hidden_dim),
+                nn.GELU(),
+                nn.Dropout(config.dropout),
+            )
+            residual_output_dim = config.residual_hidden_dim
+        else:
+            self.residual_extractor = None
+            self.residual_branch = None
+            residual_output_dim = 0
+
+        aggregate_dim = config.embedding_dim * 2 + residual_output_dim
         self.feature_head = nn.Sequential(
             nn.LayerNorm(aggregate_dim),
             nn.Linear(aggregate_dim, config.head_dim),
@@ -135,6 +234,11 @@ class FrozenClipDetector(nn.Module):
         if views.ndim != 5 or views.shape[1] < 2:
             raise ValueError("Detector input must have shape [batch, at least 2 views, C, H, W].")
         batch_size, view_count = views.shape[:2]
+        residual_statistics = (
+            self.residual_extractor(views)
+            if self.residual_extractor is not None
+            else None
+        )
         encoded = self._encode_images(views.flatten(0, 1))
         intermediate = None
         if encoded.intermediate is not None:
@@ -144,6 +248,7 @@ class FrozenClipDetector(nn.Module):
         return EncodedViews(
             final=encoded.final.reshape(batch_size, view_count, -1),
             intermediate=intermediate,
+            residual_statistics=residual_statistics,
         )
 
     def encode_pair(
@@ -161,7 +266,14 @@ class FrozenClipDetector(nn.Module):
                 if encoded.intermediate is not None
                 else None
             )
-            return EncodedViews(encoded.final[start:end], intermediate)
+            residual_statistics = (
+                encoded.residual_statistics[start:end]
+                if encoded.residual_statistics is not None
+                else None
+            )
+            return EncodedViews(
+                encoded.final[start:end], intermediate, residual_statistics
+            )
 
         return section(0, batch_size), section(batch_size, batch_size * 2)
 
@@ -203,7 +315,32 @@ class FrozenClipDetector(nn.Module):
         embeddings = self._fuse_layers(encoded)
         mean = embeddings.mean(dim=1)
         standard_deviation = embeddings.std(dim=1, unbiased=False)
-        aggregate = torch.cat([mean, standard_deviation], dim=-1)
+        aggregate_parts = [mean, standard_deviation]
+        if self.residual_branch is not None:
+            if encoded.residual_statistics is None:
+                raise ValueError(
+                    "The residual-statistics branch requires residual statistics."
+                )
+            expected = (
+                encoded.final.shape[0],
+                encoded.final.shape[1],
+                self.config.residual_statistics_dim,
+            )
+            if encoded.residual_statistics.shape != expected:
+                raise ValueError(
+                    f"Expected residual statistics shape {expected}, received "
+                    f"{tuple(encoded.residual_statistics.shape)}."
+                )
+            residual_statistics = encoded.residual_statistics.float()
+            residual_aggregate = torch.cat(
+                [
+                    residual_statistics.mean(dim=1),
+                    residual_statistics.std(dim=1, unbiased=False),
+                ],
+                dim=-1,
+            )
+            aggregate_parts.append(self.residual_branch(residual_aggregate))
+        aggregate = torch.cat(aggregate_parts, dim=-1)
         features = self.feature_head(aggregate)
         logits = self.classifier(features).squeeze(-1)
         projections = F.normalize(self.projection_head(features), dim=-1)

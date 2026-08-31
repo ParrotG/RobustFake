@@ -19,6 +19,10 @@ from tqdm import tqdm
 from aigc_recognizer.config import AppConfig, config_argument_parser, load_config
 from aigc_recognizer.data.dataset import AIGCManifestDataset, validate_preparation
 from aigc_recognizer.model import EncodedViews, FrozenClipDetector, create_detector
+from aigc_recognizer.model import (
+    RESIDUAL_STATISTICS_VERSION,
+    ResidualStatisticsExtractor,
+)
 from aigc_recognizer.utils import atomic_torch_save, seed_everything, seed_worker
 
 LOGGER = logging.getLogger(__name__)
@@ -363,6 +367,41 @@ class CachedFeatureDataset(Dataset[dict[str, Any]]):
                 field: torch.cat([shard[field] for shard in shards], dim=0)
                 for field in _TENSOR_FIELDS
             }
+            if config.model.residual_statistics_enabled:
+                residual_shards = []
+                for entry, shard in zip(entries, shards):
+                    sidecar_path = _residual_sidecar_path(directory, entry)
+                    if not sidecar_path.is_file():
+                        raise FileNotFoundError(
+                            "Residual-statistics cache is missing; run "
+                            f"aigc-cache-residuals first: {sidecar_path}"
+                        )
+                    sidecar = torch.load(
+                        sidecar_path, map_location="cpu", weights_only=False
+                    )
+                    if (
+                        sidecar.get("cache_key") != manifest["cache_key"]
+                        or sidecar.get("extractor_version")
+                        != RESIDUAL_STATISTICS_VERSION
+                        or sidecar.get("start") != shard.get("start")
+                        or sidecar.get("end") != shard.get("end")
+                        or sidecar.get("id") != shard.get("id")
+                    ):
+                        raise RuntimeError(
+                            f"Residual-statistics sidecar is incompatible: {sidecar_path}"
+                        )
+                    residual_shards.append(sidecar)
+                tensors.update(
+                    {
+                        field: torch.cat(
+                            [sidecar[field] for sidecar in residual_shards], dim=0
+                        )
+                        for field in (
+                            "clean_residual_statistics",
+                            "transformed_residual_statistics",
+                        )
+                    }
+                )
             text = {
                 field: sum((shard[field] for shard in shards), [])
                 for field in _TEXT_FIELDS
@@ -380,7 +419,7 @@ class CachedFeatureDataset(Dataset[dict[str, Any]]):
         self.text = reference_text
         self.tensors = {
             field: torch.stack([variant[field] for variant in variants], dim=0)
-            for field in _TENSOR_FIELDS
+            for field in variants[0]
         }
 
     def __len__(self) -> int:
@@ -399,9 +438,118 @@ class CachedFeatureDataset(Dataset[dict[str, Any]]):
             "transformed_final": self.tensors["transformed_final"][variant, index],
             "clean_intermediate": clean_intermediate,
             "transformed_intermediate": transformed_intermediate,
+            **(
+                {
+                    "clean_residual_statistics": self.tensors[
+                        "clean_residual_statistics"
+                    ][variant, index],
+                    "transformed_residual_statistics": self.tensors[
+                        "transformed_residual_statistics"
+                    ][variant, index],
+                }
+                if "clean_residual_statistics" in self.tensors
+                else {}
+            ),
             "label": self.tensors["label"][variant, index],
             **{field: self.text[field][index] for field in _TEXT_FIELDS},
         }
+
+
+def _residual_sidecar_path(directory: Path, entry: dict[str, Any]) -> Path:
+    relative = Path(str(entry["path"]))
+    return directory / relative.with_suffix(".residual.pt")
+
+
+@torch.inference_mode()
+def precompute_residual_statistics(config: AppConfig) -> Path:
+    """Create resumable residual-statistics sidecars without recomputing CLIP."""
+    validate_preparation(config)
+    seed_everything(config.project.seed)
+    directory = cache_directory(config)
+    manifest_path = directory / "cache_manifest.json"
+    if not manifest_path.is_file():
+        raise FileNotFoundError(
+            f"Feature cache is missing; run aigc-cache-features first: {directory}"
+        )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if not manifest.get("complete") or manifest.get("cache_key") != cache_key(config):
+        raise RuntimeError("Feature cache is incomplete or incompatible.")
+    device = _resolve_device(config)
+    extractor = ResidualStatisticsExtractor().to(device).eval()
+    requested = {
+        "train": range(config.feature_cache.train_variants),
+        "val_id": range(1),
+        "val_dg": range(1),
+    }
+    for split, variants in requested.items():
+        split_state = manifest.get("splits", {}).get(split)
+        if not isinstance(split_state, dict):
+            raise RuntimeError(f"Feature cache does not contain split {split}.")
+        for variant in variants:
+            dataset = AIGCManifestDataset(
+                config, split, deterministic_variant=variant
+            )
+            entries = split_state.get("variants", {}).get(str(variant), [])
+            if _existing_prefix(directory, entries) != len(dataset):
+                raise RuntimeError(
+                    f"Feature cache is incomplete for {split} variant {variant}."
+                )
+            progress = tqdm(entries, desc=f"Cache residuals {split} v{variant}")
+            for entry in progress:
+                destination = _residual_sidecar_path(directory, entry)
+                if destination.is_file():
+                    existing = torch.load(
+                        destination, map_location="cpu", weights_only=False
+                    )
+                    if (
+                        existing.get("cache_key") == manifest["cache_key"]
+                        and existing.get("extractor_version")
+                        == RESIDUAL_STATISTICS_VERSION
+                        and existing.get("start") == entry["start"]
+                        and existing.get("end") == entry["end"]
+                    ):
+                        continue
+                    raise RuntimeError(
+                        f"Existing residual-statistics sidecar is incompatible: {destination}"
+                    )
+                subset = Subset(dataset, range(int(entry["start"]), int(entry["end"])))
+                clean_parts: list[torch.Tensor] = []
+                transformed_parts: list[torch.Tensor] = []
+                identifiers: list[str] = []
+                for batch in _loader(config, subset):
+                    clean = batch["clean_views"].to(device, non_blocking=True)
+                    transformed = batch["transformed_views"].to(
+                        device, non_blocking=True
+                    )
+                    clean_parts.append(extractor(clean).cpu())
+                    transformed_parts.append(extractor(transformed).cpu())
+                    identifiers.extend(str(value) for value in batch["id"])
+                payload = {
+                    "schema_version": 1,
+                    "extractor_version": RESIDUAL_STATISTICS_VERSION,
+                    "cache_key": manifest["cache_key"],
+                    "split": split,
+                    "variant": variant,
+                    "start": int(entry["start"]),
+                    "end": int(entry["end"]),
+                    "id": identifiers,
+                    "clean_residual_statistics": torch.cat(clean_parts, dim=0),
+                    "transformed_residual_statistics": torch.cat(
+                        transformed_parts, dim=0
+                    ),
+                }
+                base_shard = torch.load(
+                    directory / str(entry["path"]),
+                    map_location="cpu",
+                    weights_only=False,
+                )
+                if identifiers != base_shard["id"]:
+                    raise RuntimeError(
+                        "Residual-statistics record order does not match the feature shard."
+                    )
+                atomic_torch_save(payload, destination)
+    LOGGER.info("Residual-statistics cache ready at %s", directory)
+    return directory
 
 
 def main() -> None:
@@ -413,6 +561,18 @@ def main() -> None:
     arguments = parser.parse_args()
     config = load_config(arguments.config, arguments.set)
     destination = precompute_features(config)
+    print(destination)
+
+
+def main_residual_statistics() -> None:
+    """Precompute residual statistics aligned with existing feature shards."""
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    parser = config_argument_parser(
+        "Precompute residual-statistics sidecars for cached head training."
+    )
+    arguments = parser.parse_args()
+    config = load_config(arguments.config, arguments.set)
+    destination = precompute_residual_statistics(config)
     print(destination)
 
 

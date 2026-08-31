@@ -2,7 +2,7 @@
 
 A lightweight training pipeline for detecting AI-generated images under realistic redistribution artifacts. The detector uses a frozen OpenAI CLIP ViT-B/16 visual encoder and trains only a small, view-order-invariant classification head. Paired clean and degraded views improve robustness to compression, blur, resizing, noise, color changes, and cropping.
 
-The current release implements dataset preparation, model training, validation, checkpointing, and resume support. It does not yet include the final directory-to-JSON inference tool required for a competition submission.
+The current release implements dataset preparation, model training, validation, checkpointing, resume support, and the required directory-to-JSON inference tool.
 
 For the full design rationale and data policy, see [docs/PROJECT.md](docs/PROJECT.md). The original challenge specification is available in [docs/QUESTION.MD](docs/QUESTION.MD).
 
@@ -32,6 +32,8 @@ LayerNorm → Linear(1024, 256) → GELU → Dropout
 ```
 
 The resulting feature feeds a binary classifier and a training-only contrastive projection head. With four intermediate layers, approximately 1.94M parameters are trainable. Setting `model.intermediate_layers=[]` restores the final-layer-only 0.36M-parameter head and remains compatible with earlier checkpoints. The implementation also enforces total parameters below 2B and trainable parameters below 5M at runtime.
+
+An optional Residual Statistics Branch extracts 24 fixed high-pass statistics from each normalized view. It summarizes directional, channel-wise Laplacian, and adjacent-pixel residuals, aggregates their view-wise mean and standard deviation, and projects them through a small MLP before fusion with the CLIP aggregate. It is disabled by default so existing checkpoints remain compatible and can be enabled with `model.residual_statistics_enabled=true` for a controlled ablation.
 
 ### Training Dataset
 
@@ -214,6 +216,45 @@ uv run aigc-train \
 
 Resume validation rejects a checkpoint if its backbone identity or dataset revision differs from the active configuration and manifest.
 
+### Residual Statistics Branch experiment
+
+Residual sidecars are aligned with the existing CLIP feature shards and do not recompute CLIP embeddings:
+
+```bash
+uv run aigc-cache-residuals \
+  --config artifacts/runs/clip_b16_multilayer_v3/resolved_config.yaml \
+  --set model.residual_statistics_enabled=true
+```
+
+Train the branch while keeping the v3 setup otherwise unchanged:
+
+```bash
+uv run aigc-train \
+  --config artifacts/runs/clip_b16_multilayer_v3/resolved_config.yaml \
+  --set project.run_name=clip_b16_multilayer_residual_v4 \
+  --set model.residual_statistics_enabled=true \
+  --set feature_cache.use_for_training=true
+```
+
+## Directory Inference
+
+Score every supported image recursively and atomically write the required JSON array:
+
+```bash
+uv run aigc-predict \
+  --config configs/default.yaml \
+  --input-dir path/to/images \
+  --output-json predictions.json
+```
+
+Each record contains exactly the required fields:
+
+```json
+{"image_path": "path/to/images/example.jpg", "pred": 0.9231}
+```
+
+Use `--checkpoint` to override `evaluation.checkpoint_path`, `--no-recursive` to inspect only the top-level directory, and `--set evaluation.batch_size=...` or `--set training.device=...` to tune inference resources. The command rejects model/checkpoint architecture mismatches and fails explicitly on undecodable files instead of silently omitting them.
+
 ## External Evaluation
 
 Prepare only the prescribed subset without downloading the 1.2TB WildFake repository or its complete 25.6GB DALL-E archive:
@@ -321,10 +362,9 @@ The suite covers strict mixed quotas, deterministic square-root selection, pair 
 
 ## Known Limitations
 
-- The current model uses only semantic CLIP features; no residual, frequency-domain, or camera-pipeline branch is implemented.
+- The Residual Statistics Branch is experimental and must be validated by a controlled ablation before it is enabled in the submitted model.
 - The source mixture is broader but is still a curated dataset distribution rather than a representative sample of all network uploads.
 - The nuisance probe is diagnostic; it cannot by itself distinguish a harmful acquisition shortcut from a real synthesis fingerprint.
 - A binary detector is not proof of image authenticity. Operational use requires calibration, uncertainty handling, and explicit control of false positives on real images.
-- The project does not yet provide the final directory inference and JSON submission command.
 
 Dataset files, caches, and training artifacts are excluded from Git.

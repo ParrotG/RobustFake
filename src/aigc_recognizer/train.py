@@ -168,6 +168,13 @@ def _move_batch(
         return EncodedViews(
             final=batch[f"{prefix}_final"].to(device, non_blocking=True),
             intermediate=intermediate,
+            residual_statistics=(
+                batch[f"{prefix}_residual_statistics"].to(
+                    device, non_blocking=True
+                )
+                if f"{prefix}_residual_statistics" in batch
+                else None
+            ),
         )
 
     return encoded("clean"), encoded("transformed"), labels

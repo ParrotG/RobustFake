@@ -1,9 +1,15 @@
+import pytest
 import torch
 from torch import nn
 
 from aigc_recognizer.config import LossConfig, ModelConfig
 from aigc_recognizer.losses import robust_detection_loss
-from aigc_recognizer.model import DetectorOutput, FrozenClipDetector
+from aigc_recognizer.model import (
+    DetectorOutput,
+    EncodedViews,
+    FrozenClipDetector,
+    ResidualStatisticsExtractor,
+)
 
 
 class DummyVisualEncoder(nn.Module):
@@ -136,3 +142,40 @@ def test_probability_consistency_is_bounded_and_respects_ramp_scale() -> None:
         config.consistency_weight * enabled["consistency"],
         atol=1e-5,
     )
+
+
+def test_residual_statistics_branch_is_view_invariant_and_cache_compatible() -> None:
+    config = ModelConfig(
+        embedding_dim=8,
+        head_dim=6,
+        projection_dim=4,
+        dropout=0.0,
+        residual_statistics_enabled=True,
+        residual_hidden_dim=5,
+    )
+    model = FrozenClipDetector(DummyVisualEncoder(8), config).eval()
+    views = torch.randn(3, 2, 3, 16, 16)
+
+    encoded = model.encode_views(views)
+    online = model(views)
+    cached = model.forward_encoded(encoded)
+    reversed_views = model(views.flip(1))
+
+    assert encoded.residual_statistics is not None
+    assert encoded.residual_statistics.shape == (3, 2, 24)
+    assert torch.isfinite(encoded.residual_statistics).all()
+    assert torch.allclose(online.logits, cached.logits, atol=1e-6)
+    assert torch.allclose(online.logits, reversed_views.logits, atol=1e-6)
+    online.logits.sum().backward()
+    assert model.residual_branch is not None
+    assert model.residual_branch[1].weight.grad is not None
+
+    without_statistics = EncodedViews(final=encoded.final)
+    with torch.no_grad(), pytest.raises(ValueError, match="requires residual statistics"):
+        model.forward_encoded(without_statistics)
+
+
+def test_residual_statistics_extractor_rejects_invalid_channels() -> None:
+    extractor = ResidualStatisticsExtractor()
+    with pytest.raises(ValueError, match="Residual statistics require"):
+        extractor(torch.randn(2, 2, 1, 16, 16))

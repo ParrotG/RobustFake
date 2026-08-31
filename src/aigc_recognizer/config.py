@@ -245,6 +245,9 @@ class ModelConfig:
     head_dim: int = 256
     projection_dim: int = 128
     dropout: float = 0.10
+    residual_statistics_enabled: bool = False
+    residual_statistics_dim: int = 24
+    residual_hidden_dim: int = 64
 
 
 @dataclass
@@ -580,6 +583,12 @@ class AppConfig:
             raise ConfigError("ViT-B-16 requires model.embedding_dim=512.")
         if self.model.intermediate_dim != 768:
             raise ConfigError("ViT-B-16 intermediate tokens require model.intermediate_dim=768.")
+        if self.model.residual_statistics_dim != 24:
+            raise ConfigError(
+                "The fixed residual-statistics extractor requires model.residual_statistics_dim=24."
+            )
+        if self.model.residual_hidden_dim <= 0:
+            raise ConfigError("model.residual_hidden_dim must be positive.")
         if (
             len(set(self.model.intermediate_layers)) != len(self.model.intermediate_layers)
             or self.model.intermediate_layers != sorted(self.model.intermediate_layers)

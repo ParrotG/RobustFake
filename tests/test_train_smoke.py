@@ -11,7 +11,11 @@ from aigc_recognizer.data.dataset import (
     canonical_group_name,
 )
 from aigc_recognizer.model import FrozenClipDetector
-from aigc_recognizer.feature_cache import CachedFeatureDataset, precompute_features
+from aigc_recognizer.feature_cache import (
+    CachedFeatureDataset,
+    precompute_features,
+    precompute_residual_statistics,
+)
 from aigc_recognizer.train import (
     _consistency_scale,
     _group_metrics,
@@ -210,6 +214,16 @@ def test_feature_cache_is_resumable_and_trains_without_backbone(tmp_path: Path) 
     assert len(cached) == 4
     assert cached.tensors["clean_final"].shape == (2, 4, 2, 8)
     assert cached.tensors["clean_intermediate"].shape == (2, 4, 2, 2, 5)
+
+    config.model.residual_statistics_enabled = True
+    precompute_residual_statistics(config)
+    residual_cached = CachedFeatureDataset(config, "train")
+    assert residual_cached.tensors["clean_residual_statistics"].shape == (
+        2,
+        4,
+        2,
+        24,
+    )
 
     config.feature_cache.use_for_training = True
     best = run_training(config)

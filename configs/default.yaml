@@ -177,6 +177,9 @@ model:
   head_dim: 256
   projection_dim: 128
   dropout: 0.10
+  residual_statistics_enabled: false
+  residual_statistics_dim: 24
+  residual_hidden_dim: 64
 
 loss:
   classification_weight: 1.0

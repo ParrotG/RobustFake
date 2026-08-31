@@ -2,7 +2,7 @@
 
 ## 1. 目标与边界
 
-本项目针对图片级 AIGC 检测，重点是在未见生成器以及真实传播变换下保持稳定。当前版本覆盖训练集分片获取、数据审计、双视图数据管道、模型、训练、验证和断点恢复，不包含最终比赛要求的目录到 JSON 推理脚本，也不包含高通残差或频域分支。
+本项目针对图片级 AIGC 检测，重点是在未见生成器以及真实传播变换下保持稳定。当前版本覆盖训练集分片获取、数据审计、双视图数据管道、模型、训练、验证、断点恢复和比赛要求的目录到 JSON 推理入口，并提供默认关闭的实验性 Residual Statistics Branch。
 
 默认模型远低于题目要求的 2B 参数上限。CLIP 主干完全冻结，实际训练参数不超过约 5M，适合 8–12GB NVIDIA GPU。
 
@@ -22,6 +22,8 @@
 默认在同一次 CLIP 前向中提取最终 projected embedding，以及第 4、7、10、12 个 transformer block 的归一化 CLS token。中间层经过可训练线性投影统一到 512 维，再由样本相关的 softmax gate 与最终层融合。融合后对 view 维度计算 mean 和 standard deviation，再进入 `LayerNorm → Linear → GELU → Dropout` 检测头。该结构保留最终层语义，同时允许中间层局部证据参与决策；将 `model.intermediate_layers` 设为空列表即可恢复旧的最终层模型。
 
 训练额外包含 projection head，只用于监督式对比损失。
+
+可选 Residual Statistics Branch 从每个归一化视图提取 24 维固定高通统计，包括方向残差矩、逐通道 Laplacian 统计和水平/垂直相邻像素差。两个视图的 mean/std 经小型 MLP 后与 CLIP 聚合特征拼接。该分支默认关闭，确保旧 checkpoint 兼容；其统计量可在现有 CLIP feature cache 上另建 sidecar，不需要重新计算 backbone embedding。
 
 ### 2.3 成对鲁棒训练
 
@@ -188,4 +190,4 @@ uv run aigc-evaluate-sid --config configs/default.yaml
 - nuisance classifier 只能证明低层统计可分，不能自动判断信号是采集偏置还是有意义的生成器指纹。
 - COCO val2017 泄漏审计依赖感知哈希，对极端裁剪或重绘版本不能提供密码学意义的无重叠证明。
 - 被动检测器不能作为真实性证明，实际应用必须表达不确定性并控制真实图片误报。
-- 后续版本仍需加入阈值校准、生成器留一实验和最终提交推理接口。
+- 后续版本仍需加入阈值校准和生成器留一实验，并通过受控消融决定是否启用 Residual Statistics Branch。
