@@ -1,0 +1,17 @@
+{
+  "formula": "Pf = alpha * Pg + (1 - alpha) * Pp",
+  "alpha": 0.2875778079032898,
+  "alpha_training_data": "D:\\NTU_project\\hackson\\DINO-v2\\dataset\\train2.0",
+  "model1_checkpoint": "D:\\NTU_project\\hackson\\DINO-v2\\model\\model1\\best_classifier.pt",
+  "model2_checkpoint": "D:\\NTU_project\\hackson\\DINO-v2\\model\\model2\\best_patch_attention_classifier.pt",
+  "class_to_idx": {
+    "FAKE": 0,
+    "REAL": 1
+  },
+  "alpha_train_samples": 20000,
+  "validation_samples": 5000,
+  "test_samples": 20000,
+  "best_validation_accuracy": 0.9758,
+  "test_loss": 0.07719484503269196,
+  "test_accuracy": 0.9726
+}

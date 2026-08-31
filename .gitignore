@@ -18,3 +18,13 @@ wheels/
 # Keep the supplied challenge document local while tracking the project guide.
 docs/*
 !docs/PROJECT.md
+# Local datasets and model weights
+**/dataset/
+*.pt
+*.pth
+*.bin
+*.safetensors
+
+# Local IDE settings
+.idea/
+.vscode/

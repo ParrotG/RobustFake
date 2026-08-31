@@ -1,0 +1,16 @@
+{
+  "dino_model_dir": "D:\\NTU_project\\hackson\\DINO-v2\\DINO_v2_based",
+  "dino_frozen": true,
+  "head": "attention: Linear(768, 256) -> Tanh -> Linear(256, 1); classifier: Linear(768, 2)",
+  "patch_tokens_used": "last_hidden_state[:, 1:, :] (CLS token excluded)",
+  "class_to_idx": {
+    "FAKE": 0,
+    "REAL": 1
+  },
+  "train_samples": 60000,
+  "validation_samples": 15000,
+  "test_samples": 20000,
+  "best_validation_accuracy": 0.9705333333333334,
+  "test_loss": 0.09304839092036127,
+  "test_accuracy": 0.9703
+}
