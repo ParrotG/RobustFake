@@ -33,11 +33,11 @@
 
 ```text
 L = 1.0 * mean(BCE_clean, BCE_transformed)
-  + ramp(epoch) * 0.1 * SmoothL1(sigmoid(logit_transformed), stop_grad(sigmoid(logit_clean)))
+  + ramp(epoch) * 0.5 * SmoothL1(sigmoid(logit_transformed), stop_grad(sigmoid(logit_clean)))
   + 0.05 * supervised_contrastive_loss
 ```
 
-一致性项在前三个 epoch 线性 ramp-up，并作用于有界概率而非无界 logit，避免分类 margin 增长时 clean/transformed logit 的绝对差持续主导总损失。
+一致性项在第一个 epoch 线性 ramp-up，并作用于有界概率而非无界 logit，避免分类 margin 增长时 clean/transformed logit 的绝对差持续主导总损失。
 
 题目要求的所有增强均在线生成。默认 transformed 分支有 25% 保持 clean、50% 使用一个操作、25% 组合两个不同操作。还以较低权重加入 double-JPEG、WebP 和多种 resize 插值核。
 
@@ -152,6 +152,17 @@ uv run aigc-prepare-official-eval --config configs/default.yaml
 uv run aigc-evaluate-official --config configs/default.yaml
 ```
 
+正式外部评测前，可在内部 `val_id`/`val_dg` 的 clean/transformed 预测上拟合一次
+checkpoint-bound affine Platt 校准。存在兼容训练特征缓存时只运行检测头，不重新计算
+CLIP；输出默认写在 checkpoint 同目录，外部评测和目录推理会校验 checkpoint SHA-256
+后自动应用：
+
+```bash
+uv run aigc-calibrate \
+  --config artifacts/runs/clip_b16_multilayer_v3/resolved_config.yaml \
+  --checkpoint artifacts/runs/clip_b16_multilayer_v3/best.pt
+```
+
 WildFake 仓库整体约 1.2TB，而 DALL·E ZIP 约 25.6GB。准备命令校验上游 archive SHA-256，并通过 ZIP HTTP Range 只提取题目指定成员，实际选择图片约 2.93GB；下载中断后根据原子 manifest 继续。若上游 archive 身份或官方元数据数量不再是 real 4,998/fake 8,843，命令会拒绝评测。
 
 ### 统一外部评测管线
@@ -177,6 +188,12 @@ uv run aigc-evaluate-sid --config configs/default.yaml
 ```
 
 评测矩阵包括 clean、JPEG quality 90/70/50/30、Gaussian blur sigma 0.5/1.0/2.0、resize 0.5/0.25、Gaussian noise sigma 0.02/0.05/0.10、color jitter ±20% 和 center crop 80%。此外默认启用六条有序复合流水线：resize→JPEG、JPEG→resize→JPEG、crop→resize→JPEG、blur→resize→JPEG、color→noise→JPEG，以及较强的 crop→blur→resize→JPEG。场景顺序固定且由 record ID 决定随机量；报告分别汇总 single/composed 的均值和最差 AUROC。可用 `evaluation.enable_composed_scenarios=false` 关闭复合场景。
+
+外部评测按数据集、manifest、backbone、预处理、场景和抽样记录身份缓存冻结的
+final/intermediate/residual features；同架构的新 checkpoint 可直接复用。首次全量评测
+仍需计算所有 CLIP 特征。迭代阶段可为三个外部评测命令添加 `--fast`，固定抽取
+2,000 张类别平衡样本，只运行 clean、各变换族最强单项和 stress composition，并写入
+独立的 `results.fast.json`/`predictions.fast.jsonl`，不覆盖正式结果。
 
 每个场景输出 AUROC、AP、balanced accuracy、F1、真假类别 recall 与混淆计数，并按 `source_name` 输出样本数、平均 fake 概率、预测 fake 比例和组内准确率；同时保留逐图片置信度，便于定位某个生成器或真实来源的系统性失败。公共模型路径、batch size、worker 数和场景列表均集中在 `evaluation` 配置段。
 

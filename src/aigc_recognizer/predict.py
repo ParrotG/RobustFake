@@ -18,6 +18,7 @@ from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
 from aigc_recognizer.checkpoint import load_inference_checkpoint
+from aigc_recognizer.calibration import GlobalCalibrator, load_global_calibrator
 from aigc_recognizer.config import (
     AppConfig,
     config_argument_parser,
@@ -140,12 +141,17 @@ def predict_directory(
     root = Path(input_directory)
     paths = discover_images(root, recursive=recursive)
     device = resolve_device(config)
+    calibrator: GlobalCalibrator | None = None
     if model is None:
+        selected_checkpoint = Path(
+            checkpoint_path or config.evaluation.checkpoint_path
+        )
         config, checkpoint = load_inference_checkpoint(
-            config, checkpoint_path or config.evaluation.checkpoint_path
+            config, selected_checkpoint
         )
         detector = create_detector(config.model)
         detector.load_trainable_state_dict(checkpoint["trainable_model"])
+        calibrator = load_global_calibrator(config, selected_checkpoint)
     else:
         detector = model
     detector.to(device).eval()
@@ -165,7 +171,12 @@ def predict_directory(
     for batch in tqdm(DataLoader(**loader_arguments), desc="Predict"):
         views = batch["views"].to(device, non_blocking=True)
         with _autocast(config, device):
-            scores = torch.sigmoid(detector(views).logits).float().cpu().tolist()
+            logits = detector(views).logits
+            scores = (
+                calibrator.probabilities(logits)
+                if calibrator is not None
+                else torch.sigmoid(logits)
+            ).float().cpu().tolist()
         predictions.extend(
             {"image_path": path, "pred": float(score)}
             for path, score in zip(batch["image_path"], scores)

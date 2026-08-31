@@ -1,395 +1,319 @@
 # AIGC Recognizer
 
-A lightweight training pipeline for detecting AI-generated images under realistic redistribution artifacts. The detector uses a frozen OpenAI CLIP ViT-B/16 visual encoder and trains only a small, view-order-invariant classification head. Paired clean and degraded views improve robustness to compression, blur, resizing, noise, color changes, and cropping.
+## Problem and Solution
 
-The current release implements dataset preparation, model training, validation, checkpointing, resume support, and the required directory-to-JSON inference tool.
+Generative image systems can produce realistic synthetic media at scale, while ordinary redistribution operations—JPEG recompression, blur, resizing, noise, colour adjustment, and cropping—can erase or alter the traces used by image-forensics detectors. The challenge is therefore not merely to separate clean AI-generated and authentic images, but to preserve reliable ranking and control false positives after content has passed through realistic sharing pipelines. The detector must also remain practical at hackathon scale and stay below the 2-billion-parameter limit.
 
-For the full design rationale and data policy, see [docs/PROJECT.md](docs/PROJECT.md). The original challenge specification is available in [docs/QUESTION.MD](docs/QUESTION.MD).
+AIGC Recognizer addresses this problem with a frozen CLIP ViT-B/16 visual encoder and a compact trainable forensic head. It combines global context with local evidence, fuses semantic and intermediate transformer representations, incorporates fixed residual statistics when enabled, and trains on paired clean/degraded views whose spatial geometry is shared. A diverse, leakage-audited training pool and separate in-distribution/domain-generalisation validation roles reduce dependence on a single generator or real-image source. Post-training affine calibration corrects global confidence bias without changing the detector ranking or using the official demonstration set for fitting.
 
-## Technical Overview
+### Project Snapshot
 
-### Model
+| Category | Selection |
+|---|---|
+| Development environment | Visual Studio Code; Python command-line workflow |
+| Model | Frozen OpenCLIP `ViT-B-16-quickgelu/openai`; trainable multi-layer fusion and binary detection heads; residual-statistics branch |
+| Core libraries and frameworks | PyTorch, torchvision, OpenCLIP, Pillow, scikit-learn, NumPy, Hugging Face Hub, PyArrow, ModelScope Hub |
+| Training datasets | Shanmuk AI Image Detection Dataset, WildFake train split, Community Forensics-Small, Tiny-GenImage |
+| Official demonstration dataset | WildFake subset: COCO val2017 real images and DALL·E Advanced generated images |
+| Scale | 80,000 prepared images; 64k train, 8k ID validation, 8k domain-generalisation validation |
+| Compute profile | Frozen backbone; fewer than 5M trainable parameters; approximately 8–12GB NVIDIA GPU memory recommended |
 
-The detector uses `ViT-B-16-quickgelu/openai` from `open_clip` as its visual backbone. The QuickGELU architecture matches the activation used to train the original OpenAI weights. Only the visual encoder is retained; the text encoder is not part of the training model. All CLIP parameters are frozen and the encoder remains in evaluation mode throughout training.
+The challenge specification is preserved in [docs/QUESTION.MD](docs/QUESTION.MD). Detailed acquisition, compliance, engineering, and recovery behavior is documented in [docs/PROJECT.md](docs/PROJECT.md).
 
-Each image is represented by two spatial views:
+## Contents
 
-- A wide-context square crop covering 90%–100% of the shorter image dimension. This avoids exposing source aspect ratio through label-correlated letterbox padding.
-- A local square crop covering 50%–90% of the shorter image dimension.
+- [Model Design](#model-design)
+- [Dataset Design](#dataset-design)
+- [Training, Validation, and Calibration](#training-validation-and-calibration)
+- [Official Evaluation](#official-evaluation)
+- [Environment and Reproduction](#environment-and-reproduction)
+- [Robustness Evaluation Summary](#robustness-evaluation-summary)
+- [Error Analysis Note](#error-analysis-note)
+- [Limitation Reflection](#limitation-reflection)
+- [Team Contribution](#team-contribution)
 
-Both views share the same frozen encoder. The default detector extracts the final projected embedding and normalized CLS tokens from transformer blocks 4, 7, 10, and 12 in one encoder pass. Trainable projections map intermediate tokens to 512 dimensions, and a data-dependent softmax gate fuses the five layer representations before view-wise mean and standard-deviation aggregation:
+## Model Design
 
-```text
-global image ─┐                         ┌─ final embedding ─────┐
-              ├─ frozen CLIP ViT-B/16 ─┼─ block CLS tokens ────┼─ gated layer fusion ─ mean/std ─ heads
-local crop ───┘                         └────────────────────────┘
+### Frozen multi-layer visual representation
+
+The visual backbone is OpenCLIP `ViT-B-16-quickgelu/openai`. The text encoder is discarded, all visual-encoder parameters remain frozen, and the backbone is kept in evaluation mode. This preserves the broad semantic representation learned by CLIP while keeping training and checkpoint size appropriate for the available compute budget.
+
+Each image is rendered as two square views:
+
+- A global view covering 90%–100% of the shorter image dimension retains scene-level context without exposing label-correlated letterbox padding.
+- A local view covering 50%–90% of the shorter dimension increases the chance of observing spatially local synthesis artifacts.
+
+For each view, the detector extracts the final 512-dimensional projected CLIP embedding and normalized CLS tokens from transformer blocks 4, 7, 10, and 12. Trainable linear projections map the intermediate tokens to 512 dimensions. A sample-dependent softmax gate then combines the final semantic representation with intermediate evidence instead of assigning every layer a fixed importance.
+
+The fused global and local embeddings are aggregated with their mean and standard deviation. The mean represents evidence shared by both views; the standard deviation exposes disagreement between global context and local detail. This aggregation is invariant to view ordering.
+
+The residual-statistics branch computes 24 fixed high-pass statistics per view from directional residuals, channel-wise Laplacians, and horizontal/vertical pixel differences. Its view-wise mean and standard deviation pass through a small MLP and are concatenated with the CLIP aggregate. This gives the detector direct access to compact forensic evidence while leaving the CLIP backbone frozen.
+
+```mermaid
+flowchart TD
+    A[Original encoded image] --> B[EXIF orientation, RGB conversion, label-independent standardization]
+    B --> C[Shared crop geometry]
+    C --> D1[Clean global view]
+    C --> D2[Clean local view]
+    B --> E[Redistribution degradation]
+    E --> F1[Degraded global view using shared geometry]
+    E --> F2[Degraded local view using shared geometry]
+
+    D1 --> G[Frozen CLIP ViT-B/16]
+    D2 --> G
+    F1 --> G
+    F2 --> G
+
+    G --> H1[Final projected embedding]
+    G --> H2[CLS tokens from blocks 4, 7, 10, and 12]
+    H2 --> I[Trainable 512-d projections]
+    H1 --> J[Sample-dependent softmax layer gate]
+    I --> J
+    J --> K[View mean and standard deviation]
+
+    D1 --> R[Fixed residual statistics]
+    D2 --> R
+    F1 --> R
+    F2 --> R
+    R --> S[Residual mean and standard deviation plus MLP]
+
+    K --> L[Feature concatenation]
+    S --> L
+    L --> M[LayerNorm, Linear, GELU, Dropout]
+    M --> N[Binary AIGC logit]
+    M --> P[Training-only projection head]
 ```
 
-Mean/std aggregation is invariant to view order. The mean captures evidence shared across regions, while the standard deviation exposes disagreement between global and local evidence. The aggregated 1,024-dimensional representation is processed by:
+At inference time, only one clean global/local pair is required. The clean/degraded branches shown above are paired training views.
+
+### Training objective
+
+Clean and degraded views of the same image reuse exactly the same crop geometry, so the consistency term measures sensitivity to redistribution artifacts rather than sensitivity to different image regions.
 
 ```text
-LayerNorm → Linear(1024, 256) → GELU → Dropout
-```
-
-The resulting feature feeds a binary classifier and a training-only contrastive projection head. With four intermediate layers, approximately 1.94M parameters are trainable. Setting `model.intermediate_layers=[]` restores the final-layer-only 0.36M-parameter head and remains compatible with earlier checkpoints. The implementation also enforces total parameters below 2B and trainable parameters below 5M at runtime.
-
-An optional Residual Statistics Branch extracts 24 fixed high-pass statistics from each normalized view. It summarizes directional, channel-wise Laplacian, and adjacent-pixel residuals, aggregates their view-wise mean and standard deviation, and projects them through a small MLP before fusion with the CLIP aggregate. It is disabled by default so existing checkpoints remain compatible and can be enabled with `model.residual_statistics_enabled=true` for a controlled ablation.
-
-### Training Dataset
-
-Training uses an 80,000-image pool with 40,000 real and 40,000 fake records. Every source is pinned to an immutable commit:
-
-| Source | Train real/fake | ID val real/fake | DG val real/fake | Total |
-|---|---:|---:|---:|---:|
-| Shanmuk paired set | 4k / 4k | 1k / 1k | 0 / 0 | 10k |
-| WildFake train | 9k / 9k | 0 / 0 | 4k / 2k | 24k |
-| Community Forensics-Small | 13k / 13k | 1k / 2k | 0 / 1k | 30k |
-| Tiny-GenImage | 6k / 6k | 2k / 1k | 0 / 1k | 16k |
-
-The 64k training split is strictly class-balanced. The 8k `val_id` split measures in-distribution performance, while the 8k `val_dg` split completely holds out AFHQ/Church real domains, DDPM/GALIP/MAGE/Wukong generators, and stable-hashed Community Forensics model IDs. Best-checkpoint selection weights the clean/degraded AUROC mean of both validation roles equally.
-
-The pinned Tiny-GenImage schema declares eight fake generator classes, but its 35,000 physical rows contain no SD14 examples: the other seven generators contain exactly 2,500 images each. Preparation accepts only this pinned empty-class anomaly, records it in `audit.json`, keeps Wukong as the 1k DG holdout, and distributes the 6k train plus 1k ID fake quota nearly equally across the other six observed generators. It never relabels SD15 as SD14 or fabricates an empty class.
-
-Selection uses fixed source quotas, then square-root balancing within real sources, fake families, architectures, and models. This limits domination by large domains without over-amplifying tiny buckets. Format, resolution, aspect ratio, and encoded density are audited and used only as soft priorities; they are never forced to be label-balanced.
-
-#### Bounded, resumable acquisition and global deduplication
-
-Hugging Face Parquet sources use authenticated pinned downloads; WildFake reads only `total_split/train_metadata.csv` and Range-extracts selected ZIP members in parallel. Each source has an atomic candidate checkpoint containing its completed shards/archives and staged object identities. Re-running skips completed acquisition units. Temporary payloads live only in the project cache, while retained images use content-addressed paths and reuse existing local files by hard link when possible.
-
-Before a candidate enters the manifest, preparation checks upstream provenance, encoded SHA-256, canonical RGB pixel SHA-256, 256-bit pHash+dHash, and crop-resistant hashes. Same-label duplicates are replaced from deterministic reserves; a conflicting-label duplicate fails preparation. External WildFake official/broad and SID-Set manifests are mandatory deny lists. Split priority is external test, DG validation, ID validation, then training. Shanmuk pairs are admitted or rejected together.
-
-On the first mixed preparation run, external manifests that do not already contain perceptual hashes require a local deny-index pass before source payload download begins. This pass displays `Hash external denylist`, uses bounded parallel workers, and atomically checkpoints `data/cache/mixed_aigc_80k/external_deny_index.json` every 500 completed images. It is reused on subsequent runs.
-
-Review every upstream license before use. In particular, Tiny-GenImage is a third-party GenImage derivative distributed under CC BY-NC-SA 4.0, and the combined pool is intended for non-commercial research. Accept gated Hugging Face terms and run `hf auth login`; credentials are read from the user environment and are never saved in project artifacts.
-
-#### Label-independent standardization and nuisance audit
-
-Before spatial views are generated, both classes pass through the same optional random standardizer. It conservatively samples a resize round trip, a JPEG/WebP re-encode, or both. The standardized base image is shared by clean and degraded branches. Training draws are stochastic; validation, test, and official evaluation use a seed derived from the record ID.
-
-After successful preparation, a lightweight `HistGradientBoostingClassifier` attempts to predict the label from fixed pixel statistics such as colour moments, entropy, sharpness, blockiness, edges, and frequency-band energy. `nuisance_report.json` compares raw canonical images with deterministic standardized images and reports both validation roles, per-source and per-generator results, and feature importance. This report is informational and never blocks training; high low-level separability can represent either an unwanted shortcut or a genuine generator fingerprint.
-
-### Paired Robust Training
-
-For every source image, the data pipeline returns four tensors:
-
-- Clean global view.
-- Clean local view.
-- Degraded global view.
-- Degraded local view.
-
-The clean and degraded branches reuse the same global/local geometry. This prevents the consistency objective from confusing a content-region change with a redistribution artifact.
-
-The degraded branch samples zero, one, or two distinct operations with default probabilities 25%, 50%, and 25%. Available operations are:
-
-- JPEG compression, including optional low-probability double JPEG.
-- Gaussian blur.
-- Downscale/upscale with randomized interpolation.
-- Gaussian noise.
-- Brightness, contrast, and saturation jitter.
-- Center crop followed by resize.
-- Optional low-probability WebP recompression.
-
-EXIF orientation, RGB conversion, alpha compositing, label-independent square cropping, resize, and CLIP normalization are applied consistently to both classes.
-
-The prepared 64k training split is already class-balanced and square-root-balanced within source quotas. Training therefore shuffles it without replacement so every prepared record is seen exactly once per epoch; domain balancing is not applied a second time through a replacement sampler.
-
-The total objective is:
-
-```text
-L = 1.0 × mean(BCE(clean), BCE(degraded))
-  + ramp(epoch) × 0.1 × SmoothL1(sigmoid(logit_degraded), stop_gradient(sigmoid(logit_clean)))
+L = 1.0 × mean(BCEclean, BCEdegraded)
+  + ramp(epoch) × 0.5 × SmoothL1(sigmoid(logitdegraded), stop_gradient(sigmoid(logitclean)))
   + 0.05 × supervised_contrastive_loss
 ```
 
-The two BCE terms teach classification on both clean and transformed inputs. Bounded probability consistency treats the clean prediction as a stable target without allowing an increasing logit margin to dominate the objective; its weight ramps linearly over the first three epochs. The supervised contrastive term groups clean and degraded projections by real/fake label within each batch.
+- Binary cross-entropy teaches the classifier on both untouched and redistributed inputs.
+- Probability-space consistency uses the clean prediction as a bounded teacher target. Its one-epoch ramp prevents an abrupt regularisation change at the start of optimisation without allowing unbounded logit distances to dominate later training.
+- Supervised contrastive learning brings clean/degraded projections with the same real/fake label closer while separating opposing labels.
 
-Default optimization uses AdamW, cosine decay after 5% linear warmup, FP16 automatic mixed precision, gradient clipping, and early stopping. A micro-batch of 64 gives an effective batch size of 64. The conservative `1e-4` head learning rate and `1e-3` weight decay limit logit-scale growth. Clean and transformed views are combined into one encoder invocation to improve GPU occupancy, while one prefetched batch per worker bounds host-memory pressure.
+The final feature head is `LayerNorm → Linear → GELU → Dropout`, followed by a one-logit classifier. Runtime checks enforce the challenge's parameter limit and cap the trainable detector components below 5M parameters.
 
-### Validation and Evaluation
+## Dataset Design
 
-Validation transforms are seeded from the project seed and record ID, making metrics comparable across runs. Parent groups and held-out domains never cross training and validation roles.
+The training pool is designed to represent variation along two different axes: how authentic images are acquired and what type of generator produces synthetic images. Authentic content includes photographic, web-scale, face, landscape, and ImageNet/COCO-like sources. Synthetic content spans diffusion, GAN, autoregressive/other families, general-purpose generators, fine-tuned community models, and multiple generation resolutions. This diversity is intended to make the decision boundary less dependent on one benchmark's content style or one generator family.
 
-Every epoch reports metrics separately for clean and degraded validation inputs:
+| Source | Role in the mixture |
+|---|---|
+| Shanmuk paired set | Provides controlled real/generated pairs and modern diffusion coverage |
+| WildFake train split | Broadens real domains and introduces multiple generator families and architectures |
+| Community Forensics-Small | Adds large-scale community fine-tunes, commercial systems, and heterogeneous web content |
+| Tiny-GenImage | Adds compact coverage of established GAN and diffusion benchmarks |
 
-- AUROC.
-- Average Precision.
-- Balanced Accuracy.
-- F1 score at the configured probability threshold.
-- Validation loss.
+The physical pool contains 40,000 real and 40,000 generated images. Source quotas prevent a large repository from replacing the intended mixture. Within each quota, real samples are bucketed by acquisition/content source and generated samples by family, architecture, and model. Square-root allocation gives larger domains more examples while reducing their ability to dominate and avoiding excessive oversampling of very small buckets.
 
-The checkpoint selection score gives 50% to the ID clean/degraded AUROC mean and 50% to the DG clean/degraded AUROC mean. This avoids selecting only for familiar sources or only for the held-out domain.
+The 80,000 records are divided into:
 
-All external datasets use one manifest-backed evaluator. Dataset acquisition remains isolated so source-specific download and sampling logic cannot affect inference. In addition to the challenge-prescribed WildFake subset, the project supports a complementary 6,000-image WildFake hierarchy sample and a 4,000-image SID-Set validation sample containing only real and fully synthetic images.
+- `train`: 64,000 class-balanced images used for optimisation.
+- `val_id`: 8,000 class-balanced images from represented sources, measuring ordinary held-out generalisation.
+- `val_dg`: 8,000 class-balanced images containing fully held-out real domains, generator architectures, and community model identities, measuring domain and generator transfer.
 
-### Visible AI watermark detection
+Parent groups and paired records remain within one role. Selected generators and real domains are excluded globally from training when they are assigned to domain-generalisation validation.
 
-The provenance scanner checks the four image corners for visible AI-generation marks. It recognizes common Chinese vendors such as Doubao/Seedream, Jimeng/Dreamina, Tongyi Wanxiang, and Tencent Hunyuan, plus overseas labels from DALL·E, Google Imagen/Gemini, Midjourney, Adobe Firefly, Stable Diffusion, FLUX, Ideogram, Leonardo, Microsoft Designer, Meta AI, and Canva. OCR is attempted when Tesseract is installed; a conservative pixel fallback also detects the compact white `豆包AI生成` corner mark when OCR is unavailable.
+### Provenance and visible watermark inspection
 
-Run a watermark-only scan:
+The standalone provenance scanner extracts EXIF and C2PA evidence and checks image corners for visible AI-generation marks, including Doubao/Seedream, Jimeng/Dreamina, Tongyi Wanxiang, Tencent Hunyuan, DALL-E, Google Imagen/Gemini, Midjourney, Adobe Firefly, Stable Diffusion, FLUX, Ideogram, Leonardo, Microsoft Designer, Meta AI, and Canva. It emits qualitative evidence levels and a numeric `ai_confidence` from 0 to 1. A value of `0.5` means no decisive provenance evidence; it is not a calibrated detector probability.
 
 ```bash
-uv sync --extra dev --extra cv
-uv run aigc-watermark --config configs/default.yaml /path/to/image-or-directory
+uv run aigc-provenance \
+  --config configs/default.yaml \
+  --input path/to/images \
+  --output provenance-report.json
 ```
 
-The provenance command includes the same result under each record's `watermark` field. Visible marks are provenance hints rather than signatures: they can be cropped, copied, or added after generation, so their absence does not prove an image is real.
+Visible watermarks are mutable hints rather than cryptographic proof. C2PA integrity and trust take precedence whenever a valid manifest is present.
 
-### Residual degradation diagnosis and restoration
+Duplicate and leakage control is applied before a candidate enters the manifest. The pipeline checks provenance identity, encoded content, canonical pixels, perceptual similarity, and crop-resistant similarity. Known official-evaluation assets have priority over validation and training records, same-label duplicates are replaced from deterministic reserves, and confirmed conflicting-label duplicates fail preparation. These controls make the official result a meaningful external demonstration rather than a measure of memorised images.
 
-The standalone `aigc-restore-degradation` utility reuses the fixed Laplacian and Sobel residual filters already present in the project. It reports evidence for Gaussian blur, Gaussian noise, resize/resampling artifacts, and color jitter, then applies only conservative denoising, unsharp restoration, and color balancing for the detected cases. It does not load or modify CLIP weights, model heads, or training code.
+Preprocessing is deliberately label-independent. EXIF orientation, alpha compositing, RGB conversion, optional resize round trips, and JPEG/WebP re-encoding are applied without access to the label or source identity. This reduces reliance on acquisition format while retaining both clean and degraded branches from the same standardised base image. A separate nuisance probe audits whether simple colour, sharpness, blockiness, and frequency features can still predict the label; it is diagnostic and does not become an input to the detector.
 
-```bash
-uv run aigc-restore-degradation \
-  --input /Users/furnace/Downloads/13.png \
-  --output-dir /Users/furnace/Downloads/degradation_restore_examples
+All source revisions and critical metadata checksums are pinned. Dataset-specific licenses and upstream image restrictions remain authoritative; the combined pool is intended for non-commercial research and hackathon demonstration.
+
+## Training, Validation, and Calibration
+
+### Paired robustness augmentation
+
+Every training record produces clean global/local views and a degraded global/local pair. The degraded branch samples zero, one, or two distinct operations from:
+
+- JPEG recompression, with low-probability double JPEG;
+- Gaussian blur;
+- downscale/upscale with varied interpolation;
+- Gaussian noise;
+- brightness, contrast, and saturation changes;
+- centre crop followed by resize;
+- low-probability WebP recompression.
+
+The configured ranges cover the challenge severities while also sampling intermediate values. Applying the same corruption distribution to both labels prevents “being degraded” from becoming a synthetic-image label. Sharing crop geometry between clean and degraded pairs isolates transformation sensitivity, and retaining a clean classification branch protects clean-image performance while robustness is learned.
+
+### Optimisation profile
+
+| Setting | Value | Motivation |
+|---|---:|---|
+| Epochs | 8 | Sufficient for the compact head, with early stopping |
+| Micro-batch / effective batch | 64 / 64 | Stable class coverage within the available memory budget |
+| Optimizer | AdamW | Standard optimisation for transformer-derived features |
+| Learning rate | `1e-4` | Conservative update size for the small detection head |
+| Weight decay | `1e-3` | Limits logit-scale and head overfitting |
+| Warm-up | 5% of optimizer steps | Stabilises early updates |
+| Schedule | Cosine decay | Smoothly reduces the learning rate |
+| AMP | FP16 | Improves throughput and memory use |
+| Gradient clipping | `1.0` | Guards against unstable head updates |
+| Early-stopping patience | 3 epochs | Limits overfitting after validation stops improving |
+| Consistency weight / ramp | `0.5` / 1 epoch | Enforces redistribution invariance after a short warm start |
+| Contrastive weight / temperature | `0.05` / `0.10` | Adds class-structured representation supervision |
+
+CLIP features can be precomputed into deterministic FP16 shards. Cached training loads only the trainable projections, gate, residual branch, and detector heads, which makes repeated head training practical without changing the mathematical objective.
+
+### Validation and checkpoint selection
+
+Validation transformations are deterministically seeded from the record identity so metrics are comparable across epochs. Clean and degraded metrics are reported separately on both validation roles. The checkpoint score remains intentionally simple:
+
+```text
+selection score = 0.5 × mean ID clean/degraded AUROC
+                + 0.5 × mean DG clean/degraded AUROC
 ```
 
-Each input produces a restored PNG, a fixed-residual diagnostic panel, and a JSON report containing raw metrics, per-artifact confidence, detected degradations, and applied operations. For Gaussian blur or resize evidence, restoration searches Gaussian unsharp radius, percent, and threshold against the existing fixed-filter residual energy, while penalizing clipping and excessive high-frequency gain. Restoration is heuristic and cannot reconstruct information destroyed by severe blur or resampling.
+This gives equal importance to familiar held-out domains and deliberately unseen domains without tuning against the official demonstration dataset. AUROC and Average Precision measure ranking; Balanced Accuracy, F1, real recall, fake recall, and confusion counts expose threshold behavior and false-positive trade-offs.
 
-## Installation
+### Global calibration
 
-Requirements:
+After checkpoint selection, a single affine Platt calibrator is fitted on pooled clean/degraded `val_id` and `val_dg` logits:
 
-- Python 3.10 or later.
-- PyTorch 2.2 or later.
-- An NVIDIA GPU with approximately 8–12GB VRAM is recommended for training.
+```text
+pcalibrated = sigmoid(a × raw_logit + b)
+```
 
-Install the project and development dependencies with `uv`:
+The fitted intercept can correct a global real/fake confidence bias that temperature-only scaling cannot move. A global threshold is selected by internal balanced accuracy. The calibration artifact is bound to the checkpoint SHA-256, is never fitted on the official demonstration set, and is automatically applied by official evaluation and directory inference when present. If compatible validation feature shards exist, calibration only runs the small detector head.
+
+## Official Evaluation
+
+The challenge-prescribed demonstration subset contains 4,998 COCO val2017 authentic images and 8,843 DALL·E Advanced generated images. It is isolated under `data/evaluation/`, excluded from training through the leakage deny list, and evaluated with the exact single-transform matrix requested by the challenge:
+
+- JPEG quality: 90, 70, 50, 30;
+- Gaussian blur sigma: 0.5, 1.0, 2.0;
+- resize: 0.5× and 0.25× followed by upscaling;
+- Gaussian noise sigma: 0.02, 0.05, 0.10;
+- colour jitter within 20%;
+- centre crop retaining 80%.
+
+Additional ordered compositions are treated as stress tests and reported separately from the prescribed single transformations.
+
+The completed official evaluation currently reports:
+
+| Evaluation slice | AUROC |
+|---|---:|
+| Clean | 0.9523 |
+| Mean across prescribed single transformations | 0.9443 |
+| Worst prescribed single transformation | 0.8992 |
+| Mean across additional composed stress tests | 0.8360 |
+| Worst additional composed stress test | 0.7918 |
+
+At the fixed uncalibrated threshold of 0.5, clean Balanced Accuracy is 0.8802. Strong blur and 0.25× resize preserve useful ranking—AUROC 0.9259 and 0.9206 respectively—but reduce real recall to 0.6429 and 0.6263. This identifies transformation-dependent confidence drift toward the generated class as the primary operational error mode, motivating the checkpoint-independent calibration stage and explicit reporting of real-image recall rather than accuracy alone.
+
+Official evaluation caches frozen final, intermediate, and residual features by preprocessing identity and scenario. The first evaluation computes CLIP features; compatible checkpoints subsequently execute only the trainable head. A deterministic `--fast` profile uses a balanced 2,000-image subset and representative severe scenarios for iteration, while the formal report always uses the complete official subset and full prescribed matrix.
+
+## Environment and Reproduction
+
+### Environment requirements
+
+- Python 3.10 or later;
+- `uv` for dependency and environment management;
+- PyTorch 2.2 or later;
+- an NVIDIA GPU with approximately 8–12GB VRAM for training;
+- sufficient local storage for prepared images and feature caches;
+- authenticated Hugging Face access for gated sources.
+
+### Installation
 
 ```bash
+git clone <repository-url>
+cd AIGC_Recognizer
 uv sync --extra dev
-```
-
-All runtime parameters are centralized in [configs/default.yaml](configs/default.yaml). Public commands accept only `--config` and optional repeated `--set section.key=value` overrides.
-
-## Dataset Preparation
-
-First prepare every external deny-list evaluation set, then accept the gated source terms and authenticate:
-
-```bash
-uv run aigc-prepare-official-eval --config configs/default.yaml
-uv run aigc-prepare-wildfake-eval --config configs/default.yaml
-uv run aigc-prepare-sid-eval --config configs/default.yaml
 hf auth login
 ```
 
-Prepare or resume the mixed pool:
+All runtime settings are centralised in [configs/default.yaml](configs/default.yaml). Commands accept `--config` and repeated `--set section.key=value` overrides.
 
-```bash
-uv run aigc-prepare \
-  --config configs/default.yaml
-```
+### Required directory-to-JSON inference
 
-All four revisions and the WildFake train metadata checksum are validated before formal selection. Mutable names such as `main` or `master` are rejected for mixed-data sources.
-
-A successful run produces exactly 80,000 records and `complete: true`:
-
-```bash
-uv run python -c "import json; a=json.load(open('data/processed/mixed_aigc_80k/audit.json')); assert a['complete'] and a['selected']==80000; print(a['class_counts'], a['split_counts'])"
-
-wc -l data/processed/mixed_aigc_80k/manifest.jsonl
-```
-
-The default network ceiling is 80GiB and expected permanent storage is approximately 25–45GiB. If disk or bandwidth pressure is high, reduce acquisition concurrency:
-
-```bash
-uv run aigc-prepare \
-  --config configs/default.yaml \
-  --set mixed_data.download_workers=1
-```
-
-## Training
-
-Precompute two deterministic train variants and one fixed copy of each validation split. Shards are FP16, atomically written, resumable, and stored under a cache identity derived from the manifest, transform configuration, seed, backbone, weights, and selected layers:
-
-```bash
-uv run aigc-cache-features --config configs/default.yaml
-```
-
-With four cached intermediate layers, the default two-train-variant cache occupies approximately 3.9GiB plus small metadata and serialization overhead.
-
-Train only the multi-layer fusion and detector heads from the cache:
-
-```bash
-uv run aigc-train \
-  --config configs/default.yaml \
-  --set feature_cache.use_for_training=true
-```
-
-Each training record randomly selects one of its cached variants per epoch. Cached training loads no CLIP weights and uses an in-memory loader with no worker processes. To run the original online stochastic pipeline instead:
-
-```bash
-uv run aigc-train --config configs/default.yaml
-```
-
-If batch 64 exceeds the available VRAM, use a smaller micro-batch while preserving the effective batch size:
-
-```bash
-uv run aigc-train \
-  --config configs/default.yaml \
-  --set training.batch_size=32 \
-  --set training.gradient_accumulation_steps=2
-```
-
-Resume a training run from its last checkpoint:
-
-```bash
-uv run aigc-train \
-  --config configs/default.yaml \
-  --set training.resume_from=artifacts/runs/clip_b16_multilayer_v3/last.pt
-```
-
-Resume validation rejects a checkpoint if its backbone identity or dataset revision differs from the active configuration and manifest.
-
-### Residual Statistics Branch experiment
-
-Residual sidecars are aligned with the existing CLIP feature shards and do not recompute CLIP embeddings:
-
-```bash
-uv run aigc-cache-residuals \
-  --config artifacts/runs/clip_b16_multilayer_v3/resolved_config.yaml \
-  --set model.residual_statistics_enabled=true
-```
-
-Train the branch while keeping the v3 setup otherwise unchanged:
-
-```bash
-uv run aigc-train \
-  --config artifacts/runs/clip_b16_multilayer_v3/resolved_config.yaml \
-  --set project.run_name=clip_b16_multilayer_residual_v4 \
-  --set model.residual_statistics_enabled=true \
-  --set feature_cache.use_for_training=true
-```
-
-## Directory Inference
-
-Score every supported image recursively and atomically write the required JSON array:
+The challenge-required CLI recursively scores supported images and atomically writes one JSON array:
 
 ```bash
 uv run aigc-predict \
   --config configs/default.yaml \
+  --checkpoint artifacts/runs/your_run/best.pt \
   --input-dir path/to/images \
   --output-json predictions.json
 ```
 
-Each record contains exactly the required fields:
+Each output item contains exactly the required fields:
 
 ```json
 {"image_path": "path/to/images/example.jpg", "pred": 0.9231}
 ```
 
-Use `--checkpoint` to override `evaluation.checkpoint_path`, `--no-recursive` to inspect only the top-level directory, and `--set evaluation.batch_size=...` or `--set training.device=...` to tune inference resources. The command rejects model/checkpoint architecture mismatches and fails explicitly on undecodable files instead of silently omitting them.
+`pred` is the estimated probability that the image is AI-generated. A compatible checkpoint-bound calibration file is applied automatically. Use `--no-recursive` to restrict discovery to the top-level directory.
 
-## External Evaluation
+### Training reproduction
 
-Prepare only the prescribed subset without downloading the 1.2TB WildFake repository or its complete 25.6GB DALL-E archive:
+Prepare the official protected manifest, complete the configured leakage-deny manifests as documented in [docs/PROJECT.md](docs/PROJECT.md), then prepare the mixed dataset:
 
 ```bash
 uv run aigc-prepare-official-eval --config configs/default.yaml
+uv run aigc-prepare --config configs/default.yaml
 ```
 
-The preparer validates the pinned archive SHA-256 values, reads the official metadata, and uses HTTP Range requests to extract only COCO val2017 and DALL-E Advanced. Approximately 2.91GB of selected image payload is required. Preparation is isolated under `data/evaluation/` and never modifies the training manifest.
-
-Evaluate `best.pt` on clean inputs and the exact challenge severities:
+Cache frozen features and train the detector head:
 
 ```bash
-uv run aigc-evaluate-official --config configs/default.yaml
+uv run aigc-cache-features --config configs/default.yaml
+uv run aigc-cache-residuals \
+  --config configs/default.yaml \
+  --set model.residual_statistics_enabled=true
+uv run aigc-train \
+  --config configs/default.yaml \
+  --set model.residual_statistics_enabled=true \
+  --set feature_cache.use_for_training=true
 ```
 
-The default matrix contains JPEG quality 90/70/50/30, Gaussian blur sigma 0.5/1.0/2.0, resize 0.5/0.25, Gaussian noise sigma 0.02/0.05/0.10, color jitter within 20%, and center crop 80%. It also enables six ordered composed scenarios by default: social resize/JPEG, double-compressed repost, crop/resize/JPEG, blur/resize/JPEG, edit/noise/JPEG, and one severe but still interpretable crop/blur/resize/JPEG chain. Disable only the composed scenarios with:
+Fit calibration and run the complete official evaluation:
 
 ```bash
-uv run aigc-evaluate-official --config configs/default.yaml \
-  --set evaluation.enable_composed_scenarios=false
+uv run aigc-calibrate \
+  --config artifacts/runs/your_run/resolved_config.yaml \
+  --checkpoint artifacts/runs/your_run/best.pt
+uv run aigc-evaluate-official \
+  --config artifacts/runs/your_run/resolved_config.yaml \
+  --set evaluation.checkpoint_path=artifacts/runs/your_run/best.pt
 ```
 
-### Broad WildFake sample
+For a shorter diagnostic pass, append `--fast` to the evaluation command. Detailed storage, resume, and acquisition behavior is documented in [docs/PROJECT.md](docs/PROJECT.md).
 
-The complementary sample is drawn only from WildFake's official held-out `total_split` metadata. It contains 3,000 real and 3,000 fake images. Fake allocation is equal across GAN, diffusion, and other generator families and then equal across supported architectures. Real allocation is equal across AFHQ, CelebA-HQ, LSUN Church, FFHQ, ImageNet, and LAION-5B. DALL-E and COCO are excluded because they are already represented by the prescribed benchmark; multipart SD and Midjourney archives are excluded to keep selective acquisition bounded.
+## Robustness Evaluation Summary
 
-Preparation performs archive-level concurrent HTTP Range extraction. Each worker reads members in ZIP offset order while other archives download in parallel, and the manifest is atomically checkpointed every 100 completed images:
+<!-- Reserved for the final submission summary. -->
 
-```bash
-uv run aigc-prepare-wildfake-eval --config configs/default.yaml
-uv run aigc-evaluate-wildfake --config configs/default.yaml
-```
+## Error Analysis Note
 
-The 6,000 selected images are limited to 12GiB by configuration. Re-running the preparation command resumes only missing manifest members.
+<!-- Reserved for representative false positives, false negatives, and threshold trade-offs. -->
 
-The upstream GigaGAN archive contains multiple zero-filled members that have `.png` names but cannot be decoded. Before sampling, the preparer finds image entries with an extreme ZIP compression ratio, range-reads only those tiny candidates, and excludes them only after decode validation fails. The result is cached by archive SHA-256 in `archive_integrity.json`; the current pinned archive contains 89 verified corrupt members. Deterministic sampling replaces them within the same GigaGAN stratum, so the GAN family and exact quotas remain intact. `wildfake_evaluation.excluded_source_paths` remains available for manually audited corruption that does not have this compression signature.
+## Limitation Reflection
 
-### SID-Set sample
+<!-- Reserved for the final limitation reflection and proposed future improvements. -->
 
-SID-Set preparation scans the pinned 30,000-image validation split, ignores label 2 (tampered), and retains 2,000 real plus 2,000 full-synthetic images. Quotas are distributed nearly equally across all 34 Parquet shards and records are selected by a stable seed-based hash within each shard. Three shards are prefetched while the preceding shard is processed, so network and local Parquet decoding overlap. The scan transfers approximately 16.8GB, while only the selected image bytes remain under `data/evaluation/`:
+## Team Contribution
 
-```bash
-uv run aigc-prepare-sid-eval --config configs/default.yaml
-uv run aigc-evaluate-sid --config configs/default.yaml
-```
-
-Preparation state is atomically committed after every shard. Re-running resumes at the first unfinished shard and never deletes the global Hugging Face cache. All three evaluation commands use `evaluation.checkpoint_path`, loader settings, single scenarios, and composed scenarios from the same centralized configuration section. Every scenario also reports source-group counts, mean fake probability, predicted-fake rate, and group accuracy in addition to the overall binary metrics.
-
-## Outputs
-
-```text
-data/processed/mixed_aigc_80k/
-├── objects/                Content-addressed native image bytes
-├── manifest.jsonl          Deterministic unified training manifest
-├── selection_state.json    Atomic selection/completion state
-├── audit.json              Exact quotas, revisions, licenses, and completion
-├── dedup_report.json       Exact/near duplicate and deny-list events
-├── distribution_report.json Hard and nuisance bucket distributions
-└── nuisance_report.json    Informational raw/standardized low-level probe
-
-artifacts/runs/clip_b16_multilayer_v3/
-├── best.pt                 Best trainable-head checkpoint
-├── last.pt                 Latest optimizer/training state
-├── metrics.jsonl           Timestamped epoch metrics
-└── resolved_config.yaml    Exact resolved run configuration
-
-data/evaluation/wildfake_official/
-├── images/                 Isolated official evaluation images
-├── manifest.jsonl          Exact 13,841-image evaluation manifest
-└── audit.json              Source archive identities and counts
-
-data/evaluation/wildfake_broad_6k/
-├── images/                 Balanced hierarchical WildFake sample
-├── manifest.jsonl          Shared evaluation schema
-├── preparation_state.json  Resumable archive extraction state
-└── audit.json              Exact strata and archive identities
-
-data/evaluation/sid_set_4k/
-├── images/                 Real/full-synthetic validation sample
-├── manifest.jsonl          Shared evaluation schema
-├── preparation_state.json  Resumable shard scan state
-└── audit.json              Label and per-shard sampling counts
-
-artifacts/evaluations/wildfake_official/
-├── results.json            Clean and severity-matrix metrics
-└── predictions.jsonl       Per-image confidence scores
-
-artifacts/evaluations/{wildfake_broad_6k,sid_set_4k}/
-├── results.json            Single and composed scenario metrics
-└── predictions.jsonl       Per-image confidence scores
-```
-
-The checkpoints store the trainable detector heads, optimizer, scheduler, AMP scaler, epoch, global step, random state, complete configuration, dataset revision, backbone identity, and parameter counts. Frozen CLIP weights are not duplicated in the checkpoint.
-
-## Tests
-
-Run the offline unit and CPU smoke tests:
-
-```bash
-uv run pytest
-```
-
-The suite covers strict mixed quotas, deterministic square-root selection, pair integrity, leakage exclusion, duplicate conflicts and reserve replacement, resumable checkpoints, dual validation, nuisance probing, deterministic standardization, model invariance, finite losses, checkpoint creation, and training resume.
-
-## Known Limitations
-
-- The Residual Statistics Branch is experimental and must be validated by a controlled ablation before it is enabled in the submitted model.
-- The source mixture is broader but is still a curated dataset distribution rather than a representative sample of all network uploads.
-- The nuisance probe is diagnostic; it cannot by itself distinguish a harmful acquisition shortcut from a real synthesis fingerprint.
-- A binary detector is not proof of image authenticity. Operational use requires calibration, uncertainty handling, and explicit control of false positives on real images.
-
-Dataset files, caches, and training artifacts are excluded from Git.
+<!-- Reserved for team member contributions. -->
