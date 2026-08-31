@@ -19,7 +19,7 @@ class ConfigError(ValueError):
 @dataclass
 class ProjectConfig:
     seed: int = 2026
-    run_name: str = "clip_b16_multilayer_v3"
+    run_name: str = "robustfake"
 
 
 @dataclass
@@ -241,11 +241,12 @@ class ModelConfig:
     pretrained: str = "openai"
     embedding_dim: int = 512
     intermediate_layers: list[int] = field(default_factory=list)
+    multilayer_fusion_enabled: bool = True
     intermediate_dim: int = 768
     head_dim: int = 256
     projection_dim: int = 128
     dropout: float = 0.10
-    residual_statistics_enabled: bool = False
+    residual_statistics_enabled: bool = True
     residual_statistics_dim: int = 24
     residual_hidden_dim: int = 64
     # Legacy CNN residual settings retained for compatibility with the xyl API.
@@ -398,12 +399,19 @@ class OfficialEvaluationConfig:
 class EvaluationConfig:
     """Settings shared by every manifest-backed external evaluation."""
 
-    checkpoint_path: str = "artifacts/runs/clip_b16_multilayer_v3/best.pt"
+    checkpoint_path: str = "artifacts/models/robustfake/best.pt"
     batch_size: int = 32
     num_workers: int = 8
     prefetch_factor: int = 2
     save_predictions: bool = True
+    calibration_enabled: bool = True
     calibration_path: str | None = None
+    calibration_threshold_strategy: str = "constrained_minimax"
+    calibration_max_clean_ba_drop: float = 0.005
+    hf_model_repo_id: str | None = "Gin123/RobustFake"
+    hf_model_revision: str = "main"
+    hf_checkpoint_filename: str = "best.pt"
+    hf_calibration_filename: str = "calibration.json"
     external_feature_cache_enabled: bool = True
     external_feature_cache_dir: str = "data/processed/external_feature_cache"
     external_feature_cache_dtype: str = "float16"
@@ -450,6 +458,46 @@ class EvaluationConfig:
             "combo_stress_crop_0.80_blur_1.0_resize_0.25_jpeg_30",
         ]
     )
+
+
+@dataclass
+class BaselineEvaluationConfig:
+    """Official external detector artifacts and baseline evaluation outputs."""
+
+    cache_dir: str = "data/cache/external_baselines"
+    results_dir: str = "artifacts/evaluations/baselines"
+    score_cache_enabled: bool = True
+    score_cache_dir: str = "data/processed/baseline_score_cache"
+    input_size: int = 224
+    threshold: float = 0.5
+    max_download_gb: float = 2.0
+    download_retries: int = 4
+    retry_backoff_seconds: float = 2.0
+    cnndetection_checkpoint_path: str | None = None
+    cnndetection_url: str = (
+        "https://www.dropbox.com/s/2g2jagq2jn1fd0i/"
+        "blur_jpg_prob0.5.pth?dl=1"
+    )
+    cnndetection_sha256: str = (
+        "3533f3e58a3b82215f21197f2faf4e99b911ec42a4a6e2d7823e04d5f3fd245a"
+    )
+    cnndetection_repository_revision: str = (
+        "ea0b5622365e3a9cd31d1b54b6b5971131a839ab"
+    )
+    univfd_checkpoint_path: str | None = None
+    univfd_url: str = (
+        "https://raw.githubusercontent.com/WisconsinAIVision/"
+        "UniversalFakeDetect/030495aea3300a8b54c0ec37ec7fe1dd7e63c619/"
+        "pretrained_weights/fc_weights.pth"
+    )
+    univfd_sha256: str = (
+        "477100745713bcc957beb2b40859536859b6483fd6301b3b9293151b194c7847"
+    )
+    univfd_repository_revision: str = (
+        "030495aea3300a8b54c0ec37ec7fe1dd7e63c619"
+    )
+    univfd_backbone_name: str = "ViT-L-14-quickgelu"
+    univfd_pretrained: str = "openai"
 
 
 @dataclass
@@ -557,6 +605,9 @@ class AppConfig:
         default_factory=OfficialEvaluationConfig
     )
     evaluation: EvaluationConfig = field(default_factory=EvaluationConfig)
+    baseline_evaluation: BaselineEvaluationConfig = field(
+        default_factory=BaselineEvaluationConfig
+    )
     wildfake_evaluation: WildFakeEvaluationConfig = field(
         default_factory=WildFakeEvaluationConfig
     )
@@ -873,6 +924,17 @@ class AppConfig:
             raise ConfigError("External evaluation loader settings are invalid.")
         if evaluation.prefetch_factor <= 0:
             raise ConfigError("External evaluation prefetch factor must be positive.")
+        if evaluation.calibration_threshold_strategy not in {
+            "pooled_balanced_accuracy",
+            "constrained_minimax",
+        }:
+            raise ConfigError("Unsupported calibration threshold strategy.")
+        if not 0 <= evaluation.calibration_max_clean_ba_drop <= 1:
+            raise ConfigError("Calibration clean balanced-accuracy drop must be in [0, 1].")
+        if not evaluation.hf_model_revision:
+            raise ConfigError("Hugging Face model revision must not be empty.")
+        if not evaluation.hf_checkpoint_filename or not evaluation.hf_calibration_filename:
+            raise ConfigError("Hugging Face model filenames must not be empty.")
         if evaluation.external_feature_cache_dtype not in {"float16", "float32"}:
             raise ConfigError(
                 "evaluation.external_feature_cache_dtype must be float16 or float32."
@@ -903,6 +965,41 @@ class AppConfig:
             raise ConfigError(
                 "Fast external evaluation scenarios must be supported, unique, and include clean."
             )
+        baseline = self.baseline_evaluation
+        if not baseline.cache_dir or not baseline.results_dir or not baseline.score_cache_dir:
+            raise ConfigError("Baseline evaluation output and cache paths must not be empty.")
+        if baseline.input_size <= 0 or baseline.max_download_gb <= 0:
+            raise ConfigError("Baseline input size and download limit must be positive.")
+        if baseline.download_retries < 0 or baseline.retry_backoff_seconds <= 0:
+            raise ConfigError("Baseline download retry settings are invalid.")
+        if not 0.0 <= baseline.threshold <= 1.0:
+            raise ConfigError("Baseline threshold must be in [0, 1].")
+        for name, url, sha256, revision in (
+            (
+                "CNNDetection",
+                baseline.cnndetection_url,
+                baseline.cnndetection_sha256,
+                baseline.cnndetection_repository_revision,
+            ),
+            (
+                "UnivFD",
+                baseline.univfd_url,
+                baseline.univfd_sha256,
+                baseline.univfd_repository_revision,
+            ),
+        ):
+            if not url.startswith("https://"):
+                raise ConfigError(f"{name} baseline URL must use HTTPS.")
+            if len(sha256) != 64 or any(character not in "0123456789abcdef" for character in sha256):
+                raise ConfigError(f"{name} baseline SHA-256 must be lowercase hexadecimal.")
+            if len(revision) != 40 or any(
+                character not in "0123456789abcdef" for character in revision
+            ):
+                raise ConfigError(f"{name} repository revision must be a commit SHA.")
+        if baseline.univfd_backbone_name != "ViT-L-14-quickgelu":
+            raise ConfigError("UnivFD baseline requires the OpenAI CLIP ViT-L/14 architecture.")
+        if baseline.univfd_pretrained != "openai":
+            raise ConfigError("UnivFD baseline requires OpenAI pretrained CLIP weights.")
         broad = self.wildfake_evaluation
         if broad.repo_id != "hy2628982280/WildFake":
             raise ConfigError("The broad evaluation supports only hy2628982280/WildFake.")
@@ -966,6 +1063,7 @@ _SECTIONS: dict[str, type[Any]] = {
     "feature_cache": FeatureCacheConfig,
     "official_evaluation": OfficialEvaluationConfig,
     "evaluation": EvaluationConfig,
+    "baseline_evaluation": BaselineEvaluationConfig,
     "wildfake_evaluation": WildFakeEvaluationConfig,
     "sid_evaluation": SidEvaluationConfig,
 }

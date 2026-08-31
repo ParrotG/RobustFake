@@ -13,6 +13,7 @@ from aigc_recognizer.data.dataset import (
 from aigc_recognizer.model import FrozenClipDetector
 from aigc_recognizer.feature_cache import (
     CachedFeatureDataset,
+    cache_directory,
     precompute_features,
     precompute_residual_statistics,
 )
@@ -148,6 +149,7 @@ def test_cpu_smoke_training_and_resume(tmp_path: Path) -> None:
     config.model.intermediate_layers = []
     config.model.head_dim = 6
     config.model.projection_dim = 4
+    config.model.residual_statistics_enabled = False
     config.training.device = "cpu"
     config.training.amp = False
     config.training.epochs = 1
@@ -188,6 +190,7 @@ def test_feature_cache_is_resumable_and_trains_without_backbone(tmp_path: Path) 
     config.model.intermediate_dim = 5
     config.model.head_dim = 6
     config.model.projection_dim = 4
+    config.model.residual_statistics_enabled = False
     config.training.device = "cpu"
     config.training.amp = False
     config.training.epochs = 1
@@ -205,6 +208,7 @@ def test_feature_cache_is_resumable_and_trains_without_backbone(tmp_path: Path) 
     directory = precompute_features(
         config, FrozenClipDetector(encoder, config.model)
     )
+    original_directory = directory
     manifest_path = directory / "cache_manifest.json"
     first_manifest = manifest_path.read_bytes()
     precompute_features(config, FrozenClipDetector(encoder, config.model))
@@ -216,6 +220,9 @@ def test_feature_cache_is_resumable_and_trains_without_backbone(tmp_path: Path) 
     assert cached.tensors["clean_intermediate"].shape == (2, 4, 2, 2, 5)
 
     config.model.residual_statistics_enabled = True
+    config.model.multilayer_fusion_enabled = False
+    assert cache_directory(config) == original_directory
+    config.model.multilayer_fusion_enabled = True
     precompute_residual_statistics(config)
     residual_cached = CachedFeatureDataset(config, "train")
     assert residual_cached.tensors["clean_residual_statistics"].shape == (

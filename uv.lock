@@ -15,7 +15,7 @@ resolution-markers = [
 ]
 
 [[package]]
-name = "aigc-recognizer"
+name = "robustfake"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

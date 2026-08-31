@@ -22,3 +22,4 @@ wheels/
 # Keep the supplied challenge document local while tracking the project guide.
 docs/*
 !docs/PROJECT.md
+!docs/ABLATIONS.md

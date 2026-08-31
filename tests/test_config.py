@@ -16,8 +16,10 @@ def test_default_config_loads_and_override_is_typed() -> None:
 
 def test_default_training_profile_is_stability_oriented() -> None:
     config = load_config(DEFAULT_CONFIG)
-    assert config.project.run_name == "clip_b16_multilayer_v3"
+    assert config.project.run_name == "robustfake"
     assert config.model.intermediate_layers == [3, 6, 9, 11]
+    assert config.model.multilayer_fusion_enabled
+    assert config.model.residual_statistics_enabled
     assert config.training.batch_size == 64
     assert config.training.learning_rate == pytest.approx(1e-4)
     assert config.training.weight_decay == pytest.approx(1e-3)

@@ -29,6 +29,7 @@ def test_inference_checkpoint_restores_residual_architecture(tmp_path: Path) -> 
     torch.save(_checkpoint_payload(training_config), checkpoint_path)
 
     active_config = load_config(DEFAULT_CONFIG)
+    active_config.model.residual_statistics_enabled = False
     assert not active_config.model.residual_statistics_enabled
     restored, checkpoint = load_inference_checkpoint(active_config, checkpoint_path)
 

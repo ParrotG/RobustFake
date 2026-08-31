@@ -1,24 +1,36 @@
-# AIGC Recognizer
+---
+library_name: pytorch
+pipeline_tag: image-classification
+tags:
+  - ai-generated-image-detection
+  - image-forensics
+  - robust-classification
+license: other
+---
+
+# RobustFake
+
+[GitHub](https://github.com/ParrotG/RobustFake) · [Hugging Face Model](https://huggingface.co/Gin123/RobustFake)
 
 ## Problem and Solution
 
 Generative image systems can produce realistic synthetic media at scale, while ordinary redistribution operations—JPEG recompression, blur, resizing, noise, colour adjustment, and cropping—can erase or alter the traces used by image-forensics detectors. The challenge is therefore not merely to separate clean AI-generated and authentic images, but to preserve reliable ranking and control false positives after content has passed through realistic sharing pipelines. The detector must also remain practical at hackathon scale and stay below the 2-billion-parameter limit.
 
-AIGC Recognizer addresses this problem with a frozen CLIP ViT-B/16 visual encoder and a compact trainable forensic head. It combines global context with local evidence, fuses semantic and intermediate transformer representations, incorporates fixed residual statistics when enabled, and trains on paired clean/degraded views whose spatial geometry is shared. A diverse, leakage-audited training pool and separate in-distribution/domain-generalisation validation roles reduce dependence on a single generator or real-image source. Post-training affine calibration corrects global confidence bias without changing the detector ranking or using the official demonstration set for fitting.
+RobustFake addresses this problem with a frozen CLIP ViT-B/16 visual encoder and a compact trainable forensic head. It combines global context with local evidence, fuses semantic and intermediate transformer representations, incorporates fixed residual statistics, and trains on paired clean/degraded views whose spatial geometry is shared. A diverse, leakage-audited training pool and separate in-distribution/domain-generalisation validation roles reduce dependence on a single generator or real-image source. Post-training affine calibration corrects global confidence bias without changing the detector ranking or using the official demonstration set for fitting.
 
 ### Project Snapshot
 
 | Category | Selection |
 |---|---|
 | Development environment | Visual Studio Code; Python command-line workflow |
-| Model | Frozen OpenCLIP `ViT-B-16-quickgelu/openai`; trainable multi-layer fusion and binary detection heads; residual-statistics branch |
+| Model | Frozen OpenCLIP `ViT-B-16-quickgelu/openai`; trainable multi-layer fusion and binary detection heads; residual-statistics branch enabled by default |
 | Core libraries and frameworks | PyTorch, torchvision, OpenCLIP, Pillow, scikit-learn, NumPy, Hugging Face Hub, PyArrow, ModelScope Hub |
 | Training datasets | Shanmuk AI Image Detection Dataset, WildFake train split, Community Forensics-Small, Tiny-GenImage |
 | Official demonstration dataset | WildFake subset: COCO val2017 real images and DALL·E Advanced generated images |
 | Scale | 80,000 prepared images; 64k train, 8k ID validation, 8k domain-generalisation validation |
 | Compute profile | Frozen backbone; fewer than 5M trainable parameters; approximately 8–12GB NVIDIA GPU memory recommended |
 
-The challenge specification is preserved in [docs/QUESTION.MD](docs/QUESTION.MD). Detailed acquisition, compliance, engineering, and recovery behavior is documented in [docs/PROJECT.md](docs/PROJECT.md).
+The implementation follows the supplied hackathon challenge specification. Detailed acquisition, compliance, engineering, and recovery behavior is documented in [docs/PROJECT.md](docs/PROJECT.md).
 
 ## Contents
 
@@ -26,6 +38,7 @@ The challenge specification is preserved in [docs/QUESTION.MD](docs/QUESTION.MD)
 - [Dataset Design](#dataset-design)
 - [Training, Validation, and Calibration](#training-validation-and-calibration)
 - [Official Evaluation](#official-evaluation)
+- [Ablation Protocol](#ablation-protocol)
 - [Environment and Reproduction](#environment-and-reproduction)
 - [Robustness Evaluation Summary](#robustness-evaluation-summary)
 - [Error Analysis Note](#error-analysis-note)
@@ -47,7 +60,7 @@ For each view, the detector extracts the final 512-dimensional projected CLIP em
 
 The fused global and local embeddings are aggregated with their mean and standard deviation. The mean represents evidence shared by both views; the standard deviation exposes disagreement between global context and local detail. This aggregation is invariant to view ordering.
 
-The residual-statistics branch computes 24 fixed high-pass statistics per view from directional residuals, channel-wise Laplacians, and horizontal/vertical pixel differences. Its view-wise mean and standard deviation pass through a small MLP and are concatenated with the CLIP aggregate. This gives the detector direct access to compact forensic evidence while leaving the CLIP backbone frozen.
+The residual-statistics branch, enabled by default, computes 24 fixed high-pass statistics per view from directional residuals, channel-wise Laplacians, and horizontal/vertical pixel differences. Its view-wise mean and standard deviation pass through a small MLP and are concatenated with the CLIP aggregate. This gives the detector direct access to compact forensic evidence while leaving the CLIP backbone frozen.
 
 ```mermaid
 flowchart TD
@@ -196,7 +209,9 @@ After checkpoint selection, a single affine Platt calibrator is fitted on pooled
 pcalibrated = sigmoid(a × raw_logit + b)
 ```
 
-The fitted intercept can correct a global real/fake confidence bias that temperature-only scaling cannot move. A global threshold is selected by internal balanced accuracy. The calibration artifact is bound to the checkpoint SHA-256, is never fitted on the official demonstration set, and is automatically applied by official evaluation and directory inference when present. If compatible validation feature shards exist, calibration only runs the small detector head.
+The fitted intercept can correct a global real/fake confidence bias that temperature-only scaling cannot move. Threshold selection then considers `val_id_clean`, `val_id_transformed`, `val_dg_clean`, and `val_dg_transformed` separately. It protects the best clean macro Balanced Accuracy within a configured tolerance and, among eligible thresholds, maximises the worst validation-group Balanced Accuracy before using macro performance as a tie-breaker. This avoids allowing an easy or over-represented validation group to determine the operating point.
+
+The calibration artifact is bound to the checkpoint SHA-256, is never fitted on the official demonstration set, and is automatically applied by official evaluation and directory inference when present. If compatible validation feature shards exist, calibration only runs the small detector head.
 
 ## Official Evaluation
 
@@ -215,15 +230,38 @@ The completed official evaluation currently reports:
 
 | Evaluation slice | AUROC |
 |---|---:|
-| Clean | 0.9523 |
-| Mean across prescribed single transformations | 0.9443 |
-| Worst prescribed single transformation | 0.8992 |
-| Mean across additional composed stress tests | 0.8360 |
-| Worst additional composed stress test | 0.7918 |
+| Clean | 0.9792 |
+| Mean across prescribed single transformations | 0.9683 |
+| Worst prescribed single transformation | 0.9432 |
+| Mean across additional composed stress tests | 0.8968 |
+| Worst additional composed stress test | 0.8713 |
 
-At the fixed uncalibrated threshold of 0.5, clean Balanced Accuracy is 0.8802. Strong blur and 0.25× resize preserve useful ranking—AUROC 0.9259 and 0.9206 respectively—but reduce real recall to 0.6429 and 0.6263. This identifies transformation-dependent confidence drift toward the generated class as the primary operational error mode, motivating the checkpoint-independent calibration stage and explicit reporting of real-image recall rather than accuracy alone.
+With the internally selected robust calibrated threshold, clean Balanced Accuracy is 0.8898. Strong blur and 0.25× resize retain AUROC 0.9469 and 0.9446 while achieving real recall 0.8824 and 0.8705 respectively. The strongest additional composed stress test remains the principal operational weakness: AUROC is 0.9168, but real recall falls to 0.6152. This separation between ranking and threshold behavior motivates reporting both AUROC and class-specific recall.
 
 Official evaluation caches frozen final, intermediate, and residual features by preprocessing identity and scenario. The first evaluation computes CLIP features; compatible checkpoints subsequently execute only the trainable head. A deterministic `--fast` profile uses a balanced 2,000-image subset and representative severe scenarios for iteration, while the formal report always uses the complete official subset and full prescribed matrix.
+
+### External academic baselines
+
+The same prepared manifests and transformation scenarios can evaluate two pinned public detectors without retraining them:
+
+- CNNDetection, the ResNet-50 `blur_jpg_prob0.5.pth` model from *CNN-generated images are surprisingly easy to spot... for now* (CVPR 2020);
+- UnivFD, the OpenAI CLIP ViT-L/14 linear detector from *Towards Universal Fake Image Detectors That Generalize Across Generative Models* (CVPR 2023).
+
+Their official checkpoints, repository revisions, preprocessing, score direction, and SHA-256 values are recorded in `baseline_evaluation`. Downloads are verified before loading. Baseline scores are deliberately reported as uncalibrated; AUROC and Average Precision are therefore the primary comparisons, while fixed-threshold metrics remain diagnostic.
+
+```bash
+uv run aigc-download-baselines --config configs/default.yaml
+uv run aigc-evaluate-baselines \
+  --config configs/default.yaml \
+  --dataset wildfake_official \
+  --fast
+```
+
+Omit `--fast` for the complete single- and composed-transformation matrix. Use repeated `--baseline cnndetection` or `--baseline univfd` arguments to select individual baselines. Results and per-image predictions are written under `artifacts/evaluations/baselines/<dataset>/<baseline>/`; checkpoint-independent scenario scores are cached separately for repeatable presentation analysis.
+
+## Ablation Protocol
+
+The core ablation suite starts from the final RobustFake configuration and independently removes residual statistics, multi-layer fusion, consistency loss, contrastive loss, or post-hoc calibration. All trainable ablations reuse the same frozen feature and residual caches, data split, seed, optimisation budget, checkpoint rule, and internal calibration protocol. The detailed commands, reporting rules, and presentation-ready SVG generator are documented in [docs/ABLATIONS.md](docs/ABLATIONS.md).
 
 ## Environment and Reproduction
 
@@ -234,18 +272,27 @@ Official evaluation caches frozen final, intermediate, and residual features by 
 - PyTorch 2.2 or later;
 - an NVIDIA GPU with approximately 8–12GB VRAM for training;
 - sufficient local storage for prepared images and feature caches;
-- authenticated Hugging Face access for gated sources.
+- authenticated Hugging Face access only when reproducing gated training datasets.
 
 ### Installation
 
 ```bash
-git clone <repository-url>
-cd AIGC_Recognizer
+git clone https://github.com/ParrotG/RobustFake.git
+cd RobustFake
 uv sync --extra dev
-hf auth login
 ```
 
 All runtime settings are centralised in [configs/default.yaml](configs/default.yaml). Commands accept `--config` and repeated `--set section.key=value` overrides.
+
+The release endpoint is configured as [Gin123/RobustFake](https://huggingface.co/Gin123/RobustFake). After the maintainer uploads the release package, it provides the trainable checkpoint, its SHA-256-bound calibration, and the resolved training configuration, so users do not need to reproduce training before inference. A public repository does not require authentication for download.
+
+To download the model package without running inference:
+
+```bash
+uv run robustfake-download-model \
+  --config configs/default.yaml \
+  --hf-repo Gin123/RobustFake
+```
 
 ### Required directory-to-JSON inference
 
@@ -254,7 +301,7 @@ The challenge-required CLI recursively scores supported images and atomically wr
 ```bash
 uv run aigc-predict \
   --config configs/default.yaml \
-  --checkpoint artifacts/runs/your_run/best.pt \
+  --hf-repo Gin123/RobustFake \
   --input-dir path/to/images \
   --output-json predictions.json
 ```
@@ -267,12 +314,30 @@ Each output item contains exactly the required fields:
 
 `pred` is the estimated probability that the image is AI-generated. A compatible checkpoint-bound calibration file is applied automatically. Use `--no-recursive` to restrict discovery to the top-level directory.
 
+After the first download, Hugging Face Hub reuses its local immutable snapshot cache. A local package remains supported by replacing `--hf-repo` with `--checkpoint path/to/best.pt`; place the matching `calibration.json` beside the checkpoint.
+
+### Evaluation with the Hugging Face model
+
+After preparing the official demonstration subset, run either the fast diagnostic or complete matrix without training:
+
+```bash
+uv run aigc-prepare-official-eval --config configs/default.yaml
+uv run aigc-evaluate-official \
+  --config configs/default.yaml \
+  --hf-repo Gin123/RobustFake \
+  --fast
+uv run aigc-evaluate-official \
+  --config configs/default.yaml \
+  --hf-repo Gin123/RobustFake
+```
+
 ### Training reproduction
 
 Prepare the official protected manifest, complete the configured leakage-deny manifests as documented in [docs/PROJECT.md](docs/PROJECT.md), then prepare the mixed dataset:
 
 ```bash
 uv run aigc-prepare-official-eval --config configs/default.yaml
+hf auth login
 uv run aigc-prepare --config configs/default.yaml
 ```
 
@@ -280,12 +345,9 @@ Cache frozen features and train the detector head:
 
 ```bash
 uv run aigc-cache-features --config configs/default.yaml
-uv run aigc-cache-residuals \
-  --config configs/default.yaml \
-  --set model.residual_statistics_enabled=true
+uv run aigc-cache-residuals --config configs/default.yaml
 uv run aigc-train \
   --config configs/default.yaml \
-  --set model.residual_statistics_enabled=true \
   --set feature_cache.use_for_training=true
 ```
 

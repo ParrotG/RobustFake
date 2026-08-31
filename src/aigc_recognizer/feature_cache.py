@@ -314,7 +314,14 @@ def precompute_features(
     directory = cache_directory(config)
     directory.mkdir(parents=True, exist_ok=True)
     manifest = _load_or_create_manifest(config, directory)
-    detector = (model if model is not None else create_detector(config.model)).to(device).eval()
+    # Residual statistics live in resumable sidecars. Avoid computing and then
+    # discarding them during the more expensive CLIP feature pass.
+    cache_model_config = dataclasses.replace(
+        config.model, residual_statistics_enabled=False
+    )
+    detector = (
+        model if model is not None else create_detector(cache_model_config)
+    ).to(device).eval()
     requested = {
         "train": range(config.feature_cache.train_variants),
         "val_id": range(1),
