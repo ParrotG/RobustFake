@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import dataclasses
 import hashlib
 import json
 import logging
@@ -18,11 +17,9 @@ from PIL import Image
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
+from aigc_recognizer.checkpoint import load_inference_checkpoint
 from aigc_recognizer.config import (
     AppConfig,
-    ModelConfig,
-    StandardizationConfig,
-    ViewsConfig,
     config_argument_parser,
     load_config,
 )
@@ -111,47 +108,12 @@ def _atomic_json(payload: list[dict[str, Any]], destination: Path) -> None:
             os.unlink(temporary_name)
 
 
-def _checkpoint_section(
-    checkpoint: dict[str, Any], name: str, section_type: type[Any]
-) -> Any:
-    raw = checkpoint.get("config", {}).get(name)
-    if not isinstance(raw, dict):
-        raise RuntimeError(f"Checkpoint does not contain a {name} configuration.")
-    allowed = {field.name for field in dataclasses.fields(section_type)}
-    return section_type(**{key: value for key, value in raw.items() if key in allowed})
-
-
 def load_inference_model(
     config: AppConfig, checkpoint_path: str | Path, device: torch.device
 ) -> FrozenClipDetector:
-    """Load a detector only when its architecture exactly matches the checkpoint."""
-    path = Path(checkpoint_path)
-    if not path.is_file():
-        raise FileNotFoundError(f"Detector checkpoint does not exist: {path}")
-    checkpoint = torch.load(path, map_location="cpu", weights_only=False)
-    checkpoint_model = _checkpoint_section(checkpoint, "model", ModelConfig)
-    if dataclasses.asdict(checkpoint_model) != dataclasses.asdict(config.model):
-        raise RuntimeError(
-            "Active model configuration does not match the checkpoint configuration."
-        )
-    for name, section_type in (
-        ("views", ViewsConfig),
-        ("standardization", StandardizationConfig),
-    ):
-        checkpoint_section = _checkpoint_section(checkpoint, name, section_type)
-        if dataclasses.asdict(checkpoint_section) != dataclasses.asdict(
-            getattr(config, name)
-        ):
-            raise RuntimeError(
-                f"Active {name} configuration does not match the checkpoint configuration."
-            )
-    expected_backbone = {
-        "name": config.model.backbone_name,
-        "pretrained": config.model.pretrained,
-    }
-    if checkpoint.get("backbone") != expected_backbone:
-        raise RuntimeError("Checkpoint backbone does not match the active configuration.")
-    model = create_detector(config.model)
+    """Load a detector using the architecture stored in its checkpoint."""
+    inference_config, checkpoint = load_inference_checkpoint(config, checkpoint_path)
+    model = create_detector(inference_config.model)
     model.load_trainable_state_dict(checkpoint["trainable_model"])
     return model.to(device).eval()
 
@@ -178,11 +140,14 @@ def predict_directory(
     root = Path(input_directory)
     paths = discover_images(root, recursive=recursive)
     device = resolve_device(config)
-    detector = model or load_inference_model(
-        config,
-        checkpoint_path or config.evaluation.checkpoint_path,
-        device,
-    )
+    if model is None:
+        config, checkpoint = load_inference_checkpoint(
+            config, checkpoint_path or config.evaluation.checkpoint_path
+        )
+        detector = create_detector(config.model)
+        detector.load_trainable_state_dict(checkpoint["trainable_model"])
+    else:
+        detector = model
     detector.to(device).eval()
     dataset = DirectoryInferenceDataset(config, root, paths)
     loader_arguments: dict[str, Any] = {

@@ -21,6 +21,7 @@ from PIL import Image, ImageEnhance, ImageFilter
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
+from aigc_recognizer.checkpoint import load_inference_checkpoint
 from aigc_recognizer.config import AppConfig, config_argument_parser, load_config
 from aigc_recognizer.data.transforms import RobustPairTransform, canonical_rgb
 from aigc_recognizer.metrics import binary_metrics
@@ -359,13 +360,8 @@ def evaluate_external(config: AppConfig, name: str) -> dict[str, Any]:
         raise RuntimeError("External evaluation audit count does not match the configuration.")
 
     checkpoint_path = Path(config.evaluation.checkpoint_path)
-    if not checkpoint_path.is_file():
-        raise FileNotFoundError(f"Detector checkpoint does not exist: {checkpoint_path}")
     device = resolve_device(config)
-    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
-    expected_backbone = {"name": config.model.backbone_name, "pretrained": config.model.pretrained}
-    if checkpoint.get("backbone") != expected_backbone:
-        raise RuntimeError("Checkpoint backbone does not match the evaluation configuration.")
+    config, checkpoint = load_inference_checkpoint(config, checkpoint_path)
     model = create_detector(config.model)
     model.load_trainable_state_dict(checkpoint["trainable_model"])
     model.to(device).eval()
