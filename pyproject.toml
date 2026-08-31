@@ -27,10 +27,14 @@ dev = [
 ]
 
 [project.scripts]
-aigc-prepare = "aigc_recognizer.data.prepare:main"
+aigc-prepare = "aigc_recognizer.data.mixed:main"
 aigc-train = "aigc_recognizer.train:main"
 aigc-prepare-official-eval = "aigc_recognizer.official_data:main"
 aigc-evaluate-official = "aigc_recognizer.official_eval:main"
+aigc-prepare-wildfake-eval = "aigc_recognizer.external_data:main_wildfake"
+aigc-prepare-sid-eval = "aigc_recognizer.external_data:main_sid"
+aigc-evaluate-wildfake = "aigc_recognizer.external_eval:main_wildfake"
+aigc-evaluate-sid = "aigc_recognizer.external_eval:main_sid"
 
 [build-system]
 requires = ["hatchling"]

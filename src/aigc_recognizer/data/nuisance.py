@@ -7,6 +7,7 @@ import json
 import logging
 import random
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -21,6 +22,7 @@ from sklearn.metrics import (
     roc_auc_score,
 )
 from sklearn.ensemble import HistGradientBoostingClassifier
+from tqdm import tqdm
 
 from aigc_recognizer.config import AppConfig
 from aigc_recognizer.data.transforms import RobustPairTransform, canonical_rgb
@@ -191,15 +193,40 @@ def _encoded_byte_summary(records: Iterable[dict[str, Any]]) -> dict[str, Any]:
     return summaries
 
 
+def _sample_records(
+    records: list[dict[str, Any]], limit: int, project_seed: int, split: str
+) -> list[dict[str, Any]]:
+    """Select a deterministic label/source-stratified diagnostic sample."""
+    if len(records) <= limit:
+        return records
+    grouped: dict[tuple[int, str], list[dict[str, Any]]] = {}
+    for record in records:
+        key = (int(record["label"]), str(record.get("source_dataset", "unknown")))
+        grouped.setdefault(key, []).append(record)
+    selected: list[dict[str, Any]] = []
+    remaining = limit
+    # Keep every non-empty label/source cell represented before allocating the
+    # remaining budget proportionally. This audit is diagnostic, not training.
+    for key in sorted(grouped):
+        group = sorted(grouped[key], key=lambda item: _seed(project_seed, str(item["id"])))
+        selected.append(group[0])
+        grouped[key] = group[1:]
+        remaining -= 1
+    if remaining < 0:
+        return selected[:limit]
+    pool = [record for group in grouped.values() for record in group]
+    pool.sort(key=lambda item: _seed(project_seed, f"{split}:{item['id']}"))
+    selected.extend(pool[:remaining])
+    return selected
+
+
 def _condition_features(
-    records: Iterable[dict[str, Any]], config: AppConfig, standardized: bool
+    records: Iterable[dict[str, Any]], config: AppConfig, standardized: bool, split: str = "unknown"
 ) -> tuple[np.ndarray, np.ndarray, list[dict[str, Any]]]:
     root = Path(config.data.output_dir)
     transform = RobustPairTransform(config)
-    vectors: list[np.ndarray] = []
-    labels: list[int] = []
-    retained: list[dict[str, Any]] = []
-    for record in records:
+
+    def extract(record: dict[str, Any]) -> np.ndarray:
         with Image.open(root / record["path"]) as source:
             image = canonical_rgb(source.copy(), config.views.padding_color)
         if standardized:
@@ -207,22 +234,51 @@ def _condition_features(
                 image,
                 random.Random(_seed(config.project.seed, str(record["id"]))),
             )
-        vectors.append(extract_nuisance_features(image, config.nuisance_audit.feature_size))
-        labels.append(int(record["label"]))
-        retained.append(record)
+        return extract_nuisance_features(image, config.nuisance_audit.feature_size)
+
+    retained = list(records)
+    condition_name = "standardized" if standardized else "raw"
+    with ThreadPoolExecutor(max_workers=config.nuisance_audit.feature_workers) as executor:
+        vectors = list(
+            tqdm(
+                executor.map(extract, retained),
+                total=len(retained),
+                desc=f"Nuisance features ({condition_name}, {split})",
+            )
+        )
+    labels = [int(record["label"]) for record in retained]
     return np.stack(vectors), np.asarray(labels, dtype=np.int64), retained
 
 
 def _probe_condition(
     all_records: list[dict[str, Any]], config: AppConfig, standardized: bool
 ) -> dict[str, Any]:
-    by_split = {split: [record for record in all_records if record["split"] == split] for split in ("train", "val", "test")}
+    available = {str(record["split"]) for record in all_records}
+    evaluation_splits = (
+        ["val_id", "val_dg"] if {"val_id", "val_dg"} <= available else ["val", "test"]
+    )
+    selected_splits = ["train", *evaluation_splits]
+    by_split = {}
+    for split in selected_splits:
+        records = [record for record in all_records if record["split"] == split]
+        limit = (
+            config.nuisance_audit.max_train_samples
+            if split == "train"
+            else config.nuisance_audit.max_evaluation_samples
+        )
+        by_split[split] = _sample_records(records, limit, config.project.seed, split)
+        LOGGER.info(
+            "Nuisance audit selected %d of %d %s records.",
+            len(by_split[split]),
+            len(records),
+            split,
+        )
     matrices: dict[str, np.ndarray] = {}
     labels: dict[str, np.ndarray] = {}
     ordered: dict[str, list[dict[str, Any]]] = {}
     for split, records in by_split.items():
         matrices[split], labels[split], ordered[split] = _condition_features(
-            records, config, standardized
+            records, config, standardized, split
         )
     audit = config.nuisance_audit
     classifier = HistGradientBoostingClassifier(
@@ -236,13 +292,13 @@ def _probe_condition(
     classifier.fit(matrices["train"], labels["train"])
     result: dict[str, Any] = {"splits": {}, "per_generator": {}}
     probabilities: dict[str, np.ndarray] = {}
-    for split in ("val", "test"):
+    for split in evaluation_splits:
         probabilities[split] = classifier.predict_proba(matrices[split])[:, 1]
         result["splits"][split] = _metrics(labels[split], probabilities[split])
     importance = permutation_importance(
         classifier,
-        matrices["val"],
-        labels["val"],
+        matrices[evaluation_splits[0]],
+        labels[evaluation_splits[0]],
         scoring="roc_auc",
         n_repeats=audit.permutation_repeats,
         random_state=audit.random_state,
@@ -261,9 +317,16 @@ def _probe_condition(
         key=lambda item: item["mean"],
         reverse=True,
     )
-    for generator in config.data.generators:
+    generators = sorted(
+        {
+            str(record.get("generator", record.get("model_id", "unknown")))
+            for record in all_records
+            if int(record["label"]) == 1
+        }
+    )
+    for generator in generators:
         result["per_generator"][generator] = {}
-        for split in ("val", "test"):
+        for split in evaluation_splits:
             selected = np.asarray(
                 [
                     record["label"] == 0 or record.get("generator") == generator
@@ -271,9 +334,29 @@ def _probe_condition(
                 ],
                 dtype=bool,
             )
-            result["per_generator"][generator][split] = _metrics(
-                labels[split][selected], probabilities[split][selected]
+            selected_labels = labels[split][selected]
+            if selected.sum() and len(set(selected_labels.tolist())) == 2:
+                result["per_generator"][generator][split] = _metrics(
+                    selected_labels, probabilities[split][selected]
+                )
+            else:
+                result["per_generator"][generator][split] = {
+                    "count": int(selected.sum()),
+                    "skipped": "The selected split does not contain both labels.",
+                }
+    result["per_source_dataset"] = {}
+    for source in sorted({str(record.get("source_dataset", "unknown")) for record in all_records}):
+        result["per_source_dataset"][source] = {}
+        for split in evaluation_splits:
+            selected = np.asarray(
+                [str(record.get("source_dataset", "unknown")) == source for record in ordered[split]],
+                dtype=bool,
             )
+            source_labels = labels[split][selected]
+            if selected.sum() and len(set(source_labels.tolist())) == 2:
+                result["per_source_dataset"][source][split] = _metrics(
+                    source_labels, probabilities[split][selected]
+                )
     return result
 
 
@@ -298,7 +381,10 @@ def run_nuisance_audit(config: AppConfig) -> dict[str, Any]:
                 sorted(Counter(r["generator"] for r in records if r["label"] == 1).items())
             ),
             "real_counts_by_source": dict(
-                sorted(Counter(r["source_dataset"] for r in records if r["label"] == 0).items())
+                sorted(Counter(r.get("real_source", "unknown") for r in records if r["label"] == 0).items())
+            ),
+            "real_counts_by_dataset": dict(
+                sorted(Counter(r.get("source_dataset", "unknown") for r in records if r["label"] == 0).items())
             ),
             "formats": dict(sorted(Counter(r["format"] for r in records).items())),
             "dimensions": dict(

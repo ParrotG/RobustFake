@@ -8,11 +8,11 @@ data:
   metadata_file: metadata/manifest.parquet
   source_config_file: metadata/config.json
   shard_cache_dir: data/cache/ai_image_detection_shards
-  output_dir: data/processed/ai_image_detection_20k
-  manifest_path: data/processed/ai_image_detection_20k/manifest.jsonl
-  audit_path: data/processed/ai_image_detection_20k/audit.json
-  state_path: data/processed/ai_image_detection_20k/preparation_state.json
-  nuisance_report_path: data/processed/ai_image_detection_20k/nuisance_report.json
+  output_dir: data/processed/mixed_aigc_80k
+  manifest_path: data/processed/mixed_aigc_80k/manifest.jsonl
+  audit_path: data/processed/mixed_aigc_80k/audit.json
+  state_path: data/processed/mixed_aigc_80k/selection_state.json
+  nuisance_report_path: data/processed/mixed_aigc_80k/nuisance_report.json
   hf_auth: required
   generators:
     - sd15
@@ -39,6 +39,80 @@ data:
   leakage_phash_distance: 8
   leakage_dhash_distance: 8
 
+mixed_data:
+  enabled: true
+  output_dir: data/processed/mixed_aigc_80k
+  manifest_path: data/processed/mixed_aigc_80k/manifest.jsonl
+  audit_path: data/processed/mixed_aigc_80k/audit.json
+  state_path: data/processed/mixed_aigc_80k/selection_state.json
+  dedup_report_path: data/processed/mixed_aigc_80k/dedup_report.json
+  distribution_report_path: data/processed/mixed_aigc_80k/distribution_report.json
+  cache_dir: data/cache/mixed_aigc_80k
+  shanmuk_root: data/processed/ai_image_detection_20k
+  community_root: data/processed/community_forensics_20k
+  shanmuk_repo_id: Shanmuk4622/ai-image-detection-dataset
+  shanmuk_revision: 8f1f536676f96cbc58bffd520ed50d1e7b9e894a
+  community_repo_id: OwensLab/CommunityForensics-Small
+  community_revision: 6c539a534c07917307c381f5af4053c6091b5278
+  tiny_genimage_repo_id: TheKernel01/Tiny-GenImage
+  tiny_genimage_revision: 89c4fe9efd0ebc7ce5c7641ef57d578ccd639c69
+  wildfake_repo_id: hy2628982280/WildFake
+  wildfake_revision: 18f53ff36ad9da60644039f0452b0e7b3907af6f
+  wildfake_train_metadata_file: split_train_test/csv_file/total_split/train_metadata.csv
+  wildfake_train_metadata_sha256: 26c6eacf6a34b7c61e7a1a3230c97624f58f857553cb525fe7f95dfbd5858be5
+  target_total: 80000
+  target_real: 40000
+  target_fake: 40000
+  reserve_multiplier: 1.25
+  max_network_gb: 80.0
+  storage_warning_min_gb: 25.0
+  storage_warning_max_gb: 45.0
+  download_workers: 4
+  hash_workers: 4
+  hash_checkpoint_every: 5000
+  checkpoint_every: 100
+  network_max_retries: 5
+  network_retry_base_seconds: 2.0
+  request_timeout_seconds: 60.0
+  max_image_pixels: 50000000
+  phash_size: 16
+  phash_distance: 8
+  dhash_distance: 8
+  crop_phash_distance: 8
+  source_quotas:
+    shanmuk:
+      train: {"0": 4000, "1": 4000}
+      val_id: {"0": 1000, "1": 1000}
+      val_dg: {"0": 0, "1": 0}
+    wildfake:
+      train: {"0": 9000, "1": 9000}
+      val_id: {"0": 0, "1": 0}
+      val_dg: {"0": 4000, "1": 2000}
+    community_forensics:
+      train: {"0": 13000, "1": 13000}
+      val_id: {"0": 1000, "1": 2000}
+      val_dg: {"0": 0, "1": 1000}
+    tiny_genimage:
+      train: {"0": 6000, "1": 6000}
+      val_id: {"0": 2000, "1": 1000}
+      val_dg: {"0": 0, "1": 1000}
+  external_deny_manifests:
+    - data/evaluation/wildfake_official/manifest.jsonl
+    - data/evaluation/wildfake_broad_6k/manifest.jsonl
+    - data/evaluation/sid_set_4k/manifest.jsonl
+  wildfake_train_real_sources: [laion5b, imagenet, ffhq, celebahq]
+  wildfake_dg_real_sources: [afhq, church]
+  wildfake_dg_fake_architectures: [DDPM, GALIP, MAGE]
+  global_heldout_generator_aliases: [ddpm, galip, mage, wukong]
+  community_subset_weights: {Systematic: 0.50, Manual: 0.40, Commercial: 0.10}
+  community_architecture_weights: {LatDiff: 0.50, GAN: 0.20, PixDiff: 0.15, other: 0.15}
+  community_systematic_model_cap: 8
+  community_other_model_cap: 200
+  tiny_expected_rows: 35000
+  tiny_expected_license: cc-by-nc-sa-4.0
+  tiny_generators: [ADM, BigGAN, GLIDE, Midjourney, SD14, SD15, VQDM, Wukong]
+  tiny_allowed_empty_generators: [SD14]
+
 standardization:
   enabled: true
   application_probability: 0.75
@@ -61,6 +135,9 @@ nuisance_audit:
   max_leaf_nodes: 15
   min_samples_leaf: 20
   permutation_repeats: 5
+  max_train_samples: 12000
+  max_evaluation_samples: 4000
+  feature_workers: 4
 
 views:
   input_size: 224
@@ -134,7 +211,6 @@ official_evaluation:
   manifest_path: data/evaluation/wildfake_official/manifest.jsonl
   audit_path: data/evaluation/wildfake_official/audit.json
   metadata_dir: data/cache/wildfake_official_metadata
-  checkpoint_path: artifacts/runs/clip_b16_multiview/best.pt
   results_path: artifacts/evaluations/wildfake_official/results.json
   predictions_path: artifacts/evaluations/wildfake_official/predictions.jsonl
   dalle_metadata_file: label_csv_files/dalle3.csv
@@ -150,10 +226,13 @@ official_evaluation:
   request_timeout_seconds: 60.0
   network_max_retries: 5
   network_retry_backoff: 1.0
+evaluation:
+  checkpoint_path: artifacts/runs/clip_b16_multiview/best.pt
   batch_size: 32
   num_workers: 8
   prefetch_factor: 2
   save_predictions: true
+  enable_composed_scenarios: true
   scenarios:
     - clean
     - jpeg_90
@@ -170,3 +249,77 @@ official_evaluation:
     - noise_0.10
     - color_jitter_0.20
     - center_crop_0.80
+  composed_scenarios:
+    - combo_social_resize_0.5_jpeg_70
+    - combo_repost_jpeg_90_resize_0.5_jpeg_70
+    - combo_crop_0.80_resize_0.5_jpeg_70
+    - combo_blur_1.0_resize_0.5_jpeg_50
+    - combo_edit_color_0.20_noise_0.02_jpeg_70
+    - combo_stress_crop_0.80_blur_1.0_resize_0.25_jpeg_30
+
+wildfake_evaluation:
+  repo_id: hy2628982280/WildFake
+  revision: master
+  metadata_file: split_train_test/csv_file/total_split/test_metadata.csv
+  metadata_sha256: 0cec85fcec02e6e262f5b9726560b0355ab1293a30d29f063bf10a3c9d1b16c3
+  metadata_dir: data/cache/wildfake_broad_metadata
+  integrity_cache_path: data/cache/wildfake_broad_metadata/archive_integrity.json
+  output_dir: data/evaluation/wildfake_broad_6k
+  manifest_path: data/evaluation/wildfake_broad_6k/manifest.jsonl
+  audit_path: data/evaluation/wildfake_broad_6k/audit.json
+  state_path: data/evaluation/wildfake_broad_6k/preparation_state.json
+  results_path: artifacts/evaluations/wildfake_broad_6k/results.json
+  predictions_path: artifacts/evaluations/wildfake_broad_6k/predictions.jsonl
+  target_real: 3000
+  target_fake: 3000
+  fake_families: [GAN_based, Diffusion_based, Other_based]
+  fake_architectures:
+    - BigGAN
+    - DF-GAN
+    - GALIP
+    - GigaGAN
+    - starGAN
+    - styleGAN
+    - ADM
+    - DDIM
+    - DDPM
+    - Imagen
+    - VQDM
+    - MAE
+    - MAGE
+    - VQGAN
+    - VQVAE
+  real_sources: [afhq, celebahq, church, ffhq, imagenet, laion5b]
+  excluded_source_paths:
+    # This upstream ZIP member contains zero-filled bytes rather than a PNG.
+    - GAN_based/Advanced/GigaGAN/fake_images/18598.png
+  detect_extreme_zip_compression: true
+  extreme_zip_compression_ratio: 0.02
+  download_workers: 4
+  checkpoint_every: 100
+  request_timeout_seconds: 60.0
+  network_max_retries: 5
+  network_retry_backoff: 1.0
+  max_download_gb: 12.0
+
+sid_evaluation:
+  repo_id: saberzl/SID_Set
+  revision: dc03ead57929879319ce30a82bfcfb8d317b10bd
+  split: validation
+  shard_prefix: data/validation-
+  shard_cache_dir: data/cache/sid_set_validation_shards
+  output_dir: data/evaluation/sid_set_4k
+  manifest_path: data/evaluation/sid_set_4k/manifest.jsonl
+  audit_path: data/evaluation/sid_set_4k/audit.json
+  state_path: data/evaluation/sid_set_4k/preparation_state.json
+  results_path: artifacts/evaluations/sid_set_4k/results.json
+  predictions_path: artifacts/evaluations/sid_set_4k/predictions.jsonl
+  hf_auth: auto
+  target_real: 2000
+  target_fake: 2000
+  download_workers: 3
+  checkpoint_every_shards: 1
+  network_max_retries: 5
+  network_retry_base_seconds: 5.0
+  max_download_gb: 18.0
+  max_shard_cache_gb: 2.0

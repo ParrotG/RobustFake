@@ -58,3 +58,27 @@ def test_extended_metrics_include_confusion_counts() -> None:
     assert metrics["false_positive"] == 1
     assert metrics["false_negative"] == 1
     assert metrics["accuracy"] == 0.5
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "combo_social_resize_0.5_jpeg_70",
+        "combo_repost_jpeg_90_resize_0.5_jpeg_70",
+        "combo_crop_0.80_resize_0.5_jpeg_70",
+        "combo_blur_1.0_resize_0.5_jpeg_50",
+        "combo_edit_color_0.20_noise_0.02_jpeg_70",
+        "combo_stress_crop_0.80_blur_1.0_resize_0.25_jpeg_30",
+    ],
+)
+def test_composed_scenarios_are_deterministic_and_preserve_shape(scenario: str) -> None:
+    pixels = np.arange(32 * 24 * 3, dtype=np.uint8).reshape(24, 32, 3)
+    image = Image.fromarray(pixels, mode="RGB")
+
+    first = _scenario_image(image.copy(), scenario, random.Random(19))
+    second = _scenario_image(image.copy(), scenario, random.Random(19))
+
+    assert first.size == image.size
+    assert first.mode == "RGB"
+    assert np.array_equal(np.asarray(first), np.asarray(second))
+    assert not np.array_equal(np.asarray(first), np.asarray(image))

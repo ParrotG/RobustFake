@@ -29,6 +29,30 @@ def test_invalid_probability_sum_is_rejected() -> None:
         )
 
 
-def test_unknown_official_evaluation_scenario_is_rejected() -> None:
+def test_unknown_external_evaluation_scenario_is_rejected() -> None:
     with pytest.raises(ConfigError, match="unsupported scenario"):
-        load_config(DEFAULT_CONFIG, ["official_evaluation.scenarios=[clean, unknown]"])
+        load_config(DEFAULT_CONFIG, ["evaluation.scenarios=[clean, unknown]"])
+
+
+def test_composed_evaluation_can_be_disabled_from_central_config() -> None:
+    config = load_config(DEFAULT_CONFIG, ["evaluation.enable_composed_scenarios=false"])
+    assert config.evaluation.enable_composed_scenarios is False
+    assert config.evaluation.composed_scenarios
+
+
+def test_unknown_composed_evaluation_scenario_is_rejected() -> None:
+    with pytest.raises(ConfigError, match="unsupported scenario"):
+        load_config(DEFAULT_CONFIG, ["evaluation.composed_scenarios=[unknown]"])
+
+
+def test_unsafe_wildfake_exclusion_path_is_rejected() -> None:
+    with pytest.raises(ConfigError, match="safe relative paths"):
+        load_config(
+            DEFAULT_CONFIG,
+            ["wildfake_evaluation.excluded_source_paths=[../outside.png]"],
+        )
+
+
+def test_mixed_source_revision_must_be_immutable() -> None:
+    with pytest.raises(ConfigError, match="40-character commit SHA"):
+        load_config(DEFAULT_CONFIG, ["mixed_data.tiny_genimage_revision=main"])

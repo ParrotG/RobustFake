@@ -20,9 +20,13 @@ def validate_preparation(config: AppConfig) -> dict[str, Any]:
     manifest_path = Path(config.data.manifest_path)
     audit_path = Path(config.data.audit_path)
     if not manifest_path.is_file():
-        images_dir = Path(config.data.output_dir) / "images"
-        has_partial_images = images_dir.is_dir() and any(
-            path.is_file() for path in images_dir.rglob("*")
+        object_roots = [
+            Path(config.data.output_dir) / "images",
+            Path(config.data.output_dir) / "objects",
+        ]
+        has_partial_images = any(
+            root.is_dir() and any(path.is_file() for path in root.rglob("*"))
+            for root in object_roots
         )
         detail = (
             " Image files are present, but preparation did not commit its manifest. "
@@ -46,6 +50,12 @@ def validate_preparation(config: AppConfig) -> dict[str, Any]:
             f"({audit.get('selected', 0)} images; {audit.get('stop_reason', 'unknown reason')}). "
             "Rerun aigc-prepare to resume before training."
         )
+    if (
+        config.mixed_data.enabled
+        and "target_total" in audit
+        and int(audit.get("selected", -1)) != config.mixed_data.target_total
+    ):
+        raise RuntimeError("Completed mixed-data audit does not contain the configured target total.")
     return audit
 
 
@@ -80,8 +90,8 @@ class AIGCManifestDataset(Dataset[dict[str, Any]]):
     """Load original images and create paired robust views online."""
 
     def __init__(self, config: AppConfig, split: str) -> None:
-        if split not in {"train", "val"}:
-            raise ValueError("Dataset split must be train or val.")
+        if split not in {"train", "val", "val_id", "val_dg"}:
+            raise ValueError("Dataset split must be train, val, val_id, or val_dg.")
         self.config = config
         self.split = split
         self.records = load_manifest(config.data.manifest_path, split)
@@ -105,10 +115,19 @@ class AIGCManifestDataset(Dataset[dict[str, Any]]):
                 image = source.copy()
         except (OSError, ValueError) as exc:
             raise RuntimeError(f"Failed to decode training image: {image_path}") from exc
-        seed = self._validation_seed(record["id"]) if self.split == "val" else None
+        seed = self._validation_seed(record["id"]) if self.split != "train" else None
         views = self.transform(image, seed=seed)
         return {
             **views,
             "label": torch.tensor(float(record["label"]), dtype=torch.float32),
             "id": record["id"],
+            "source_dataset": str(record.get("source_dataset", "unknown")),
+            "real_source": str(record.get("real_source", "")),
+            "generator_family": str(record.get("generator_family", "")),
+            "architecture": str(record.get("architecture", record.get("generator", "unknown"))),
+            "domain": str(
+                record.get("real_source")
+                if int(record["label"]) == 0
+                else record.get("architecture", record.get("generator", "unknown"))
+            ),
         }

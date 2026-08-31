@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import math
@@ -14,7 +15,7 @@ from typing import Any
 import torch
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import LambdaLR
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, WeightedRandomSampler
 from tqdm import tqdm
 
 from aigc_recognizer.config import AppConfig, config_argument_parser, load_config
@@ -46,10 +47,61 @@ def resolve_device(config: AppConfig) -> torch.device:
     return device
 
 
-def make_loaders(config: AppConfig) -> tuple[DataLoader[Any], DataLoader[Any]]:
-    """Build reproducible train and validation loaders."""
+def _training_sampler(
+    dataset: AIGCManifestDataset, config: AppConfig, generator: torch.Generator
+) -> WeightedRandomSampler:
+    """Balance labels exactly and blend natural/uniform source distributions by square root."""
+    group_counts: dict[tuple[int, str, str], int] = {}
+    label_counts: dict[int, int] = {}
+    for record in dataset.records:
+        label = int(record["label"])
+        source = str(record.get("source_dataset", "unknown"))
+        domain = str(
+            record.get("real_source", "unknown")
+            if label == 0
+            else record.get("architecture", record.get("generator_family", "unknown"))
+        )
+        group_counts[(label, source, domain)] = group_counts.get((label, source, domain), 0) + 1
+        label_counts[label] = label_counts.get(label, 0) + 1
+    if set(label_counts) != {0, 1}:
+        raise RuntimeError("Training requires both real and fake samples.")
+    weights = []
+    for record in dataset.records:
+        label = int(record["label"])
+        source = str(record.get("source_dataset", "unknown"))
+        domain = str(
+            record.get("real_source", "unknown")
+            if label == 0
+            else record.get("architecture", record.get("generator_family", "unknown"))
+        )
+        # Per-item 1/sqrt(n) gives each source/domain group mass proportional to sqrt(n).
+        source_weight = 1.0 / math.sqrt(group_counts[(label, source, domain)])
+        label_normalizer = sum(
+            math.sqrt(count)
+            for (candidate_label, _source, _domain), count in group_counts.items()
+            if candidate_label == label
+        )
+        weights.append(source_weight / label_normalizer)
+    return WeightedRandomSampler(
+        torch.as_tensor(weights, dtype=torch.double),
+        num_samples=len(dataset),
+        replacement=True,
+        generator=generator,
+    )
+
+
+def make_loaders(config: AppConfig) -> tuple[DataLoader[Any], DataLoader[Any], DataLoader[Any]]:
+    """Build a square-root-balanced train loader and separate ID/DG validation loaders."""
     train_dataset = AIGCManifestDataset(config, "train")
-    val_dataset = AIGCManifestDataset(config, "val")
+    try:
+        val_id_dataset = AIGCManifestDataset(config, "val_id")
+        val_dg_dataset = AIGCManifestDataset(config, "val_dg")
+    except ValueError as exc:
+        if "contains no records" not in str(exc):
+            raise
+        # Retain compatibility with small legacy smoke manifests.
+        val_id_dataset = AIGCManifestDataset(config, "val")
+        val_dg_dataset = val_id_dataset
     generator = torch.Generator().manual_seed(config.project.seed)
     common = {
         "batch_size": config.training.batch_size,
@@ -62,13 +114,13 @@ def make_loaders(config: AppConfig) -> tuple[DataLoader[Any], DataLoader[Any]]:
         common["prefetch_factor"] = config.training.prefetch_factor
     train_loader = DataLoader(
         train_dataset,
-        shuffle=True,
-        generator=generator,
+        sampler=_training_sampler(train_dataset, config, generator),
         drop_last=False,
         **common,
     )
-    val_loader = DataLoader(val_dataset, shuffle=False, drop_last=False, **common)
-    return train_loader, val_loader
+    val_id_loader = DataLoader(val_id_dataset, shuffle=False, drop_last=False, **common)
+    val_dg_loader = DataLoader(val_dg_dataset, shuffle=False, drop_last=False, **common)
+    return train_loader, val_id_loader, val_dg_loader
 
 
 def _shutdown_loader_workers(loader: DataLoader[Any]) -> None:
@@ -165,12 +217,18 @@ def evaluate(
     loader: DataLoader[Any],
     config: AppConfig,
     device: torch.device,
-) -> dict[str, float]:
+) -> dict[str, Any]:
     """Evaluate clean and deterministically transformed validation views."""
     model.eval()
     labels_all: list[float] = []
     clean_probabilities: list[float] = []
     transformed_probabilities: list[float] = []
+    group_values: dict[str, list[str]] = {
+        "source_dataset": [],
+        "real_source": [],
+        "generator_family": [],
+        "architecture": [],
+    }
     loss_total = 0.0
     example_count = 0
     for batch in tqdm(loader, desc="Validate", leave=False):
@@ -186,6 +244,8 @@ def evaluate(
         transformed_probabilities.extend(
             torch.sigmoid(transformed.logits).float().cpu().tolist()
         )
+        for field in group_values:
+            group_values[field].extend(str(value) for value in batch[field])
     clean_metrics = binary_metrics(labels_all, clean_probabilities, config.training.threshold)
     transformed_metrics = binary_metrics(
         labels_all, transformed_probabilities, config.training.threshold
@@ -198,13 +258,64 @@ def evaluate(
     result["monitor_auroc"] = 0.5 * (
         result["clean_auroc"] + result["transformed_auroc"]
     )
+    result["groups"] = {}
+    for field, values in group_values.items():
+        result["groups"][field] = {}
+        names = sorted({value for value in values if value})
+        for name in names:
+            if field == "source_dataset":
+                indices = [index for index, value in enumerate(values) if value == name]
+            elif field == "real_source":
+                indices = [
+                    index for index, value in enumerate(values)
+                    if labels_all[index] == 1 or value == name
+                ]
+            else:
+                indices = [
+                    index for index, value in enumerate(values)
+                    if labels_all[index] == 0 or value == name
+                ]
+            selected_labels = [labels_all[index] for index in indices]
+            if len(set(selected_labels)) != 2:
+                result["groups"][field][name] = {
+                    "count": len(indices),
+                    "skipped": "The selected validation group does not contain both labels.",
+                }
+                continue
+            clean_group = binary_metrics(
+                selected_labels,
+                [clean_probabilities[index] for index in indices],
+                config.training.threshold,
+            )
+            transformed_group = binary_metrics(
+                selected_labels,
+                [transformed_probabilities[index] for index in indices],
+                config.training.threshold,
+            )
+            result["groups"][field][name] = {
+                "count": len(indices),
+                **{f"clean_{key}": value for key, value in clean_group.items()},
+                **{f"transformed_{key}": value for key, value in transformed_group.items()},
+            }
     return result
 
 
 def _source_revision(config: AppConfig) -> str:
+    revisions: dict[str, str] = {}
     with Path(config.data.manifest_path).open("r", encoding="utf-8") as handle:
-        first_record = json.loads(next(line for line in handle if line.strip()))
-    return str(first_record["source_revision"])
+        for line in handle:
+            if not line.strip():
+                continue
+            record = json.loads(line)
+            source = str(record.get("source_dataset", "legacy"))
+            revision = str(record["source_revision"])
+            if source in revisions and revisions[source] != revision:
+                raise RuntimeError(f"Manifest source {source} contains multiple revisions.")
+            revisions[source] = revision
+    if len(revisions) == 1:
+        return next(iter(revisions.values()))
+    digest = hashlib.sha256(json.dumps(revisions, sort_keys=True).encode()).hexdigest()
+    return f"mixed:{digest}"
 
 
 def _checkpoint_payload(
@@ -272,7 +383,8 @@ def _run_training_loop(
     model: FrozenClipDetector | None,
     device: torch.device,
     train_loader: DataLoader[Any],
-    val_loader: DataLoader[Any],
+    val_id_loader: DataLoader[Any],
+    val_dg_loader: DataLoader[Any],
 ) -> Path:
     """Run the model and optimization lifecycle using initialized loaders."""
     detector = model if model is not None else create_detector(config.model)
@@ -335,8 +447,11 @@ def _run_training_loop(
             epoch,
         )
         global_step += optimizer_steps
-        val_metrics = evaluate(detector, val_loader, config, device)
-        monitored = val_metrics["monitor_auroc"]
+        val_id_metrics = evaluate(detector, val_id_loader, config, device)
+        val_dg_metrics = evaluate(detector, val_dg_loader, config, device)
+        monitored = 0.5 * (
+            val_id_metrics["monitor_auroc"] + val_dg_metrics["monitor_auroc"]
+        )
         improved = math.isfinite(monitored) and monitored > best_metric
         if improved:
             best_metric = monitored
@@ -366,15 +481,18 @@ def _run_training_loop(
                 "global_step": global_step,
                 "learning_rate": optimizer.param_groups[0]["lr"],
                 "train": train_metrics,
-                "validation": val_metrics,
+                "validation_id": val_id_metrics,
+                "validation_dg": val_dg_metrics,
+                "validation": val_id_metrics,
                 "best_metric": best_metric,
             },
         )
         LOGGER.info(
-            "Epoch %d: train_loss=%.4f val_loss=%.4f monitor_auroc=%.4f",
+            "Epoch %d: train_loss=%.4f id_loss=%.4f dg_loss=%.4f monitor_auroc=%.4f",
             epoch + 1,
             train_metrics["total"],
-            val_metrics["loss"],
+            val_id_metrics["loss"],
+            val_dg_metrics["loss"],
             monitored,
         )
         if epochs_without_improvement >= config.training.early_stopping_patience:
@@ -391,12 +509,16 @@ def run_training(config: AppConfig, model: FrozenClipDetector | None = None) -> 
     seed_everything(config.project.seed)
     device = resolve_device(config)
     LOGGER.info("Training on device %s", device)
-    train_loader, val_loader = make_loaders(config)
+    train_loader, val_id_loader, val_dg_loader = make_loaders(config)
     try:
-        return _run_training_loop(config, model, device, train_loader, val_loader)
+        return _run_training_loop(
+            config, model, device, train_loader, val_id_loader, val_dg_loader
+        )
     finally:
         _shutdown_loader_workers(train_loader)
-        _shutdown_loader_workers(val_loader)
+        _shutdown_loader_workers(val_id_loader)
+        if val_dg_loader is not val_id_loader:
+            _shutdown_loader_workers(val_dg_loader)
         if device.type == "cuda":
             torch.cuda.empty_cache()
 

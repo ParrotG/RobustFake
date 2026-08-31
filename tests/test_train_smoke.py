@@ -24,7 +24,7 @@ class DummyVisualEncoder(nn.Module):
 
 def make_manifest(root: Path) -> Path:
     records = []
-    for split in ("train", "val"):
+    for split in ("train", "val_id", "val_dg"):
         for label in (0, 1):
             for index in range(2):
                 record_id = f"{split}-{label}-{index}"
@@ -93,3 +93,6 @@ def test_cpu_smoke_training_and_resume(tmp_path: Path) -> None:
     assert resumed_best.is_file()
     metric_lines = (best.parent / "metrics.jsonl").read_text(encoding="utf-8").splitlines()
     assert len(metric_lines) == 2
+    latest = json.loads(metric_lines[-1])
+    assert "validation_id" in latest
+    assert "validation_dg" in latest
