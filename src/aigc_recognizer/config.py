@@ -19,7 +19,7 @@ class ConfigError(ValueError):
 @dataclass
 class ProjectConfig:
     seed: int = 2026
-    run_name: str = "clip_b16_multiview"
+    run_name: str = "clip_b16_multilayer_v3"
 
 
 @dataclass
@@ -205,6 +205,8 @@ class MixedDataConfig:
 @dataclass
 class ViewsConfig:
     input_size: int = 224
+    global_crop_scale_min: float = 0.90
+    global_crop_scale_max: float = 1.0
     local_scale_min: float = 0.50
     local_scale_max: float = 0.90
     padding_color: int = 127
@@ -235,32 +237,35 @@ class AugmentationsConfig:
 
 @dataclass
 class ModelConfig:
-    backbone_name: str = "ViT-B-16"
+    backbone_name: str = "ViT-B-16-quickgelu"
     pretrained: str = "openai"
     embedding_dim: int = 512
+    intermediate_layers: list[int] = field(default_factory=list)
+    intermediate_dim: int = 768
     head_dim: int = 256
     projection_dim: int = 128
-    dropout: float = 0.20
+    dropout: float = 0.10
 
 
 @dataclass
 class LossConfig:
     classification_weight: float = 1.0
-    consistency_weight: float = 0.5
-    contrastive_weight: float = 0.1
+    consistency_weight: float = 0.1
+    consistency_rampup_epochs: int = 3
+    contrastive_weight: float = 0.05
     contrastive_temperature: float = 0.10
 
 
 @dataclass
 class TrainingConfig:
-    epochs: int = 12
-    batch_size: int = 16
-    gradient_accumulation_steps: int = 2
-    learning_rate: float = 3e-4
-    weight_decay: float = 1e-4
-    warmup_fraction: float = 0.10
-    num_workers: int = 8
-    prefetch_factor: int = 2
+    epochs: int = 8
+    batch_size: int = 64
+    gradient_accumulation_steps: int = 1
+    learning_rate: float = 1e-4
+    weight_decay: float = 1e-3
+    warmup_fraction: float = 0.05
+    num_workers: int = 12
+    prefetch_factor: int = 1
     persistent_workers: bool = False
     amp: bool = True
     amp_dtype: str = "fp16"
@@ -277,6 +282,21 @@ class OutputConfig:
     root_dir: str = "artifacts/runs"
     save_last: bool = True
     keep_best_only: bool = False
+
+
+@dataclass
+class FeatureCacheConfig:
+    """Settings for deterministic frozen-backbone feature precomputation."""
+
+    root_dir: str = "data/processed/feature_cache"
+    use_for_training: bool = False
+    train_variants: int = 2
+    shard_size: int = 2048
+    batch_size: int = 64
+    num_workers: int = 12
+    prefetch_factor: int = 1
+    pin_memory: bool = True
+    dtype: str = "float16"
 
 
 @dataclass
@@ -308,7 +328,7 @@ class OfficialEvaluationConfig:
 class EvaluationConfig:
     """Settings shared by every manifest-backed external evaluation."""
 
-    checkpoint_path: str = "artifacts/runs/clip_b16_multiview/best.pt"
+    checkpoint_path: str = "artifacts/runs/clip_b16_multilayer_v3/best.pt"
     batch_size: int = 32
     num_workers: int = 8
     prefetch_factor: int = 2
@@ -442,6 +462,7 @@ class AppConfig:
     loss: LossConfig = field(default_factory=LossConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
+    feature_cache: FeatureCacheConfig = field(default_factory=FeatureCacheConfig)
     official_evaluation: OfficialEvaluationConfig = field(
         default_factory=OfficialEvaluationConfig
     )
@@ -551,16 +572,36 @@ class AppConfig:
                 raise ConfigError("Tiny-GenImage empty-generator exceptions must be a strict subset.")
             if not mixed.tiny_expected_license:
                 raise ConfigError("Tiny-GenImage expected license must be configured.")
-        if self.model.backbone_name != "ViT-B-16":
-            raise ConfigError("Only the ViT-B-16 backbone is supported in v1.")
+        if self.model.backbone_name not in {"ViT-B-16", "ViT-B-16-quickgelu"}:
+            raise ConfigError("Only ViT-B-16 variants are currently supported.")
         if self.model.pretrained != "openai":
             raise ConfigError("Only the OpenAI pretrained weights are supported in v1.")
         if self.model.embedding_dim != 512:
             raise ConfigError("ViT-B-16 requires model.embedding_dim=512.")
+        if self.model.intermediate_dim != 768:
+            raise ConfigError("ViT-B-16 intermediate tokens require model.intermediate_dim=768.")
+        if (
+            len(set(self.model.intermediate_layers)) != len(self.model.intermediate_layers)
+            or self.model.intermediate_layers != sorted(self.model.intermediate_layers)
+            or any(index < 0 or index >= 12 for index in self.model.intermediate_layers)
+        ):
+            raise ConfigError(
+                "model.intermediate_layers must contain unique ascending ViT-B/16 block indices in [0, 11]."
+            )
         if self.views.input_size != 224:
             raise ConfigError("ViT-B-16 currently requires views.input_size=224.")
-        if not 0 < self.views.local_scale_min <= self.views.local_scale_max <= 1:
-            raise ConfigError("Local view scales must satisfy 0 < min <= max <= 1.")
+        if not (
+            0
+            < self.views.local_scale_min
+            <= self.views.local_scale_max
+            <= self.views.global_crop_scale_min
+            <= self.views.global_crop_scale_max
+            <= 1
+        ):
+            raise ConfigError(
+                "View scales must satisfy 0 < local min <= local max <= "
+                "global min <= global max <= 1."
+            )
         if not self.data.revision:
             raise ConfigError("data.revision must pin a dataset commit.")
         if len(self.data.generators) != 6 or len(set(self.data.generators)) != 6:
@@ -625,10 +666,32 @@ class AppConfig:
             raise ConfigError("Nuisance classifier sampling and worker limits must be positive.")
         if self.training.batch_size <= 0 or self.training.gradient_accumulation_steps <= 0:
             raise ConfigError("Batch size and gradient accumulation must be positive.")
+        if self.training.epochs <= 0 or self.training.learning_rate <= 0:
+            raise ConfigError("Epoch count and learning rate must be positive.")
+        if self.training.weight_decay < 0 or not 0 <= self.training.warmup_fraction < 1:
+            raise ConfigError("Weight decay must be non-negative and warmup fraction in [0, 1).")
         if self.training.num_workers < 0 or self.training.prefetch_factor <= 0:
             raise ConfigError("Worker count must be non-negative and prefetch factor positive.")
         if self.training.amp_dtype not in {"fp16", "bf16"}:
             raise ConfigError("training.amp_dtype must be fp16 or bf16.")
+        cache = self.feature_cache
+        if cache.train_variants <= 0 or cache.shard_size <= 0 or cache.batch_size <= 0:
+            raise ConfigError("Feature-cache variants, shard size, and batch size must be positive.")
+        if cache.num_workers < 0 or cache.prefetch_factor <= 0:
+            raise ConfigError("Feature-cache worker count must be non-negative and prefetch factor positive.")
+        if cache.dtype not in {"float16", "float32"}:
+            raise ConfigError("feature_cache.dtype must be float16 or float32.")
+        if self.loss.consistency_rampup_epochs < 0:
+            raise ConfigError("loss.consistency_rampup_epochs must be non-negative.")
+        if any(
+            value < 0
+            for value in (
+                self.loss.classification_weight,
+                self.loss.consistency_weight,
+                self.loss.contrastive_weight,
+            )
+        ) or self.loss.contrastive_temperature <= 0:
+            raise ConfigError("Loss weights must be non-negative and temperature positive.")
         official = self.official_evaluation
         if official.repo_id != "hy2628982280/WildFake":
             raise ConfigError("Only hy2628982280/WildFake is supported for official evaluation.")
@@ -734,6 +797,7 @@ _SECTIONS: dict[str, type[Any]] = {
     "loss": LossConfig,
     "training": TrainingConfig,
     "output": OutputConfig,
+    "feature_cache": FeatureCacheConfig,
     "official_evaluation": OfficialEvaluationConfig,
     "evaluation": EvaluationConfig,
     "wildfake_evaluation": WildFakeEvaluationConfig,

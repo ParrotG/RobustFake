@@ -15,14 +15,19 @@ from typing import Any
 import torch
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import LambdaLR
-from torch.utils.data import DataLoader, WeightedRandomSampler
+from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from aigc_recognizer.config import AppConfig, config_argument_parser, load_config
 from aigc_recognizer.data.dataset import AIGCManifestDataset, validate_preparation
 from aigc_recognizer.losses import robust_detection_loss
 from aigc_recognizer.metrics import binary_metrics
-from aigc_recognizer.model import FrozenClipDetector, create_detector
+from aigc_recognizer.model import (
+    EncodedViews,
+    FrozenClipDetector,
+    create_cached_detector,
+    create_detector,
+)
 from aigc_recognizer.utils import (
     append_metric,
     atomic_torch_save,
@@ -47,74 +52,60 @@ def resolve_device(config: AppConfig) -> torch.device:
     return device
 
 
-def _training_sampler(
-    dataset: AIGCManifestDataset, config: AppConfig, generator: torch.Generator
-) -> WeightedRandomSampler:
-    """Balance labels exactly and blend natural/uniform source distributions by square root."""
-    group_counts: dict[tuple[int, str, str], int] = {}
+def _validate_training_distribution(dataset: AIGCManifestDataset) -> None:
+    """Require the prepared training manifest to contain both balanced labels."""
     label_counts: dict[int, int] = {}
     for record in dataset.records:
         label = int(record["label"])
-        source = str(record.get("source_dataset", "unknown"))
-        domain = str(
-            record.get("real_source", "unknown")
-            if label == 0
-            else record.get("architecture", record.get("generator_family", "unknown"))
-        )
-        group_counts[(label, source, domain)] = group_counts.get((label, source, domain), 0) + 1
         label_counts[label] = label_counts.get(label, 0) + 1
     if set(label_counts) != {0, 1}:
         raise RuntimeError("Training requires both real and fake samples.")
-    weights = []
-    for record in dataset.records:
-        label = int(record["label"])
-        source = str(record.get("source_dataset", "unknown"))
-        domain = str(
-            record.get("real_source", "unknown")
-            if label == 0
-            else record.get("architecture", record.get("generator_family", "unknown"))
+    if label_counts[0] != label_counts[1]:
+        raise RuntimeError(
+            "Training manifest labels must be balanced before full-coverage sampling."
         )
-        # Per-item 1/sqrt(n) gives each source/domain group mass proportional to sqrt(n).
-        source_weight = 1.0 / math.sqrt(group_counts[(label, source, domain)])
-        label_normalizer = sum(
-            math.sqrt(count)
-            for (candidate_label, _source, _domain), count in group_counts.items()
-            if candidate_label == label
-        )
-        weights.append(source_weight / label_normalizer)
-    return WeightedRandomSampler(
-        torch.as_tensor(weights, dtype=torch.double),
-        num_samples=len(dataset),
-        replacement=True,
-        generator=generator,
-    )
 
 
 def make_loaders(config: AppConfig) -> tuple[DataLoader[Any], DataLoader[Any], DataLoader[Any]]:
-    """Build a square-root-balanced train loader and separate ID/DG validation loaders."""
-    train_dataset = AIGCManifestDataset(config, "train")
-    try:
-        val_id_dataset = AIGCManifestDataset(config, "val_id")
-        val_dg_dataset = AIGCManifestDataset(config, "val_dg")
-    except ValueError as exc:
-        if "contains no records" not in str(exc):
-            raise
-        # Retain compatibility with small legacy smoke manifests.
-        val_id_dataset = AIGCManifestDataset(config, "val")
-        val_dg_dataset = val_id_dataset
+    """Build a full-coverage train loader and separate ID/DG validation loaders."""
+    if config.feature_cache.use_for_training:
+        from aigc_recognizer.feature_cache import CachedFeatureDataset
+
+        train_dataset = CachedFeatureDataset(config, "train")
+        val_id_dataset = CachedFeatureDataset(config, "val_id")
+        val_dg_dataset = CachedFeatureDataset(config, "val_dg")
+        labels = train_dataset.tensors["label"][0]
+        real_count = int((labels == 0).sum())
+        fake_count = int((labels == 1).sum())
+        if real_count != fake_count or real_count + fake_count != len(train_dataset):
+            raise RuntimeError("Cached training features must contain balanced binary labels.")
+    else:
+        train_dataset = AIGCManifestDataset(config, "train")
+        try:
+            val_id_dataset = AIGCManifestDataset(config, "val_id")
+            val_dg_dataset = AIGCManifestDataset(config, "val_dg")
+        except ValueError as exc:
+            if "contains no records" not in str(exc):
+                raise
+            # Retain compatibility with small legacy smoke manifests.
+            val_id_dataset = AIGCManifestDataset(config, "val")
+            val_dg_dataset = val_id_dataset
+        _validate_training_distribution(train_dataset)
     generator = torch.Generator().manual_seed(config.project.seed)
+    worker_count = 0 if config.feature_cache.use_for_training else config.training.num_workers
     common = {
         "batch_size": config.training.batch_size,
-        "num_workers": config.training.num_workers,
+        "num_workers": worker_count,
         "pin_memory": config.training.pin_memory and torch.cuda.is_available(),
         "worker_init_fn": seed_worker,
     }
-    if config.training.num_workers > 0:
+    if worker_count > 0:
         common["persistent_workers"] = config.training.persistent_workers
         common["prefetch_factor"] = config.training.prefetch_factor
     train_loader = DataLoader(
         train_dataset,
-        sampler=_training_sampler(train_dataset, config, generator),
+        shuffle=True,
+        generator=generator,
         drop_last=False,
         **common,
     )
@@ -157,12 +148,86 @@ def _autocast_context(config: AppConfig, device: torch.device) -> Any:
     return torch.autocast(device_type="cuda", dtype=dtype)
 
 
-def _move_batch(batch: dict[str, Any], device: torch.device) -> tuple[torch.Tensor, ...]:
-    return (
-        batch["clean_views"].to(device, non_blocking=True),
-        batch["transformed_views"].to(device, non_blocking=True),
-        batch["label"].to(device, non_blocking=True),
-    )
+def _move_batch(
+    batch: dict[str, Any], device: torch.device
+) -> tuple[torch.Tensor | EncodedViews, torch.Tensor | EncodedViews, torch.Tensor]:
+    labels = batch["label"].to(device, non_blocking=True)
+    if "clean_final" not in batch:
+        return (
+            batch["clean_views"].to(device, non_blocking=True),
+            batch["transformed_views"].to(device, non_blocking=True),
+            labels,
+        )
+
+    def encoded(prefix: str) -> EncodedViews:
+        intermediate = batch[f"{prefix}_intermediate"]
+        if intermediate.shape[-2] == 0:
+            intermediate = None
+        elif intermediate is not None:
+            intermediate = intermediate.to(device, non_blocking=True)
+        return EncodedViews(
+            final=batch[f"{prefix}_final"].to(device, non_blocking=True),
+            intermediate=intermediate,
+        )
+
+    return encoded("clean"), encoded("transformed"), labels
+
+
+def _forward_pair(
+    model: FrozenClipDetector,
+    clean: torch.Tensor | EncodedViews,
+    transformed: torch.Tensor | EncodedViews,
+) -> tuple[Any, Any]:
+    if isinstance(clean, EncodedViews) and isinstance(transformed, EncodedViews):
+        return model.forward_pair_encoded(clean, transformed)
+    if isinstance(clean, torch.Tensor) and isinstance(transformed, torch.Tensor):
+        return model.forward_pair(clean, transformed)
+    raise TypeError("Clean and transformed batch representations must have matching types.")
+
+
+def _group_metrics(
+    labels: list[float], probabilities: list[float], threshold: float
+) -> dict[str, Any]:
+    """Report useful threshold metrics for both mixed- and single-class groups."""
+    targets = [int(value) for value in labels]
+    predictions = [int(value >= threshold) for value in probabilities]
+    real_count = sum(value == 0 for value in targets)
+    fake_count = sum(value == 1 for value in targets)
+    result: dict[str, Any] = {
+        "real_count": real_count,
+        "fake_count": fake_count,
+        "mean_probability": sum(probabilities) / max(1, len(probabilities)),
+        "predicted_fake_rate": sum(predictions) / max(1, len(predictions)),
+        "accuracy": sum(
+            prediction == target
+            for prediction, target in zip(predictions, targets)
+        )
+        / max(1, len(targets)),
+    }
+    if fake_count:
+        result["fake_recall"] = sum(
+            prediction == 1 and target == 1
+            for prediction, target in zip(predictions, targets)
+        ) / fake_count
+    if real_count:
+        result["real_recall"] = sum(
+            prediction == 0 and target == 0
+            for prediction, target in zip(predictions, targets)
+        ) / real_count
+        result["false_positive_rate"] = 1.0 - result["real_recall"]
+    if real_count and fake_count:
+        result.update(binary_metrics(labels, probabilities, threshold))
+    return result
+
+
+def _consistency_scale(
+    epoch: int, batch_index: int, batch_count: int, rampup_epochs: int
+) -> float:
+    """Linearly introduce consistency over the configured opening epochs."""
+    if rampup_epochs == 0:
+        return 1.0
+    progress = epoch + (batch_index + 1) / max(1, batch_count)
+    return min(1.0, progress / rampup_epochs)
 
 
 def train_one_epoch(
@@ -185,9 +250,21 @@ def train_one_epoch(
     progress = tqdm(loader, desc=f"Train {epoch + 1}", leave=False)
     for batch_index, batch in enumerate(progress):
         clean_views, transformed_views, labels = _move_batch(batch, device)
+        consistency_scale = _consistency_scale(
+            epoch,
+            batch_index,
+            len(loader),
+            config.loss.consistency_rampup_epochs,
+        )
         with _autocast_context(config, device):
-            clean, transformed = model.forward_pair(clean_views, transformed_views)
-            losses = robust_detection_loss(clean, transformed, labels, config.loss)
+            clean, transformed = _forward_pair(model, clean_views, transformed_views)
+            losses = robust_detection_loss(
+                clean,
+                transformed,
+                labels,
+                config.loss,
+                consistency_scale=consistency_scale,
+            )
             scaled_loss = losses["total"] / accumulation
         scaler.scale(scaled_loss).backward()
         examples = labels.numel()
@@ -217,6 +294,8 @@ def evaluate(
     loader: DataLoader[Any],
     config: AppConfig,
     device: torch.device,
+    *,
+    consistency_scale: float = 1.0,
 ) -> dict[str, Any]:
     """Evaluate clean and deterministically transformed validation views."""
     model.eval()
@@ -234,8 +313,14 @@ def evaluate(
     for batch in tqdm(loader, desc="Validate", leave=False):
         clean_views, transformed_views, labels = _move_batch(batch, device)
         with _autocast_context(config, device):
-            clean, transformed = model.forward_pair(clean_views, transformed_views)
-            losses = robust_detection_loss(clean, transformed, labels, config.loss)
+            clean, transformed = _forward_pair(model, clean_views, transformed_views)
+            losses = robust_detection_loss(
+                clean,
+                transformed,
+                labels,
+                config.loss,
+                consistency_scale=consistency_scale,
+            )
         examples = labels.numel()
         example_count += examples
         loss_total += float(losses["total"]) * examples
@@ -276,18 +361,12 @@ def evaluate(
                     if labels_all[index] == 0 or value == name
                 ]
             selected_labels = [labels_all[index] for index in indices]
-            if len(set(selected_labels)) != 2:
-                result["groups"][field][name] = {
-                    "count": len(indices),
-                    "skipped": "The selected validation group does not contain both labels.",
-                }
-                continue
-            clean_group = binary_metrics(
+            clean_group = _group_metrics(
                 selected_labels,
                 [clean_probabilities[index] for index in indices],
                 config.training.threshold,
             )
-            transformed_group = binary_metrics(
+            transformed_group = _group_metrics(
                 selected_labels,
                 [transformed_probabilities[index] for index in indices],
                 config.training.threshold,
@@ -387,7 +466,11 @@ def _run_training_loop(
     val_dg_loader: DataLoader[Any],
 ) -> Path:
     """Run the model and optimization lifecycle using initialized loaders."""
-    detector = model if model is not None else create_detector(config.model)
+    detector = model if model is not None else (
+        create_cached_detector(config.model)
+        if config.feature_cache.use_for_training
+        else create_detector(config.model)
+    )
     detector.to(device)
     counts = detector.parameter_counts()
     if counts["total"] >= 2_000_000_000:
@@ -447,8 +530,26 @@ def _run_training_loop(
             epoch,
         )
         global_step += optimizer_steps
-        val_id_metrics = evaluate(detector, val_id_loader, config, device)
-        val_dg_metrics = evaluate(detector, val_dg_loader, config, device)
+        validation_consistency_scale = _consistency_scale(
+            epoch,
+            len(train_loader) - 1,
+            len(train_loader),
+            config.loss.consistency_rampup_epochs,
+        )
+        val_id_metrics = evaluate(
+            detector,
+            val_id_loader,
+            config,
+            device,
+            consistency_scale=validation_consistency_scale,
+        )
+        val_dg_metrics = evaluate(
+            detector,
+            val_dg_loader,
+            config,
+            device,
+            consistency_scale=validation_consistency_scale,
+        )
         monitored = 0.5 * (
             val_id_metrics["monitor_auroc"] + val_dg_metrics["monitor_auroc"]
         )

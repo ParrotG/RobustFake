@@ -41,12 +41,22 @@ def robust_detection_loss(
     transformed: DetectorOutput,
     labels: torch.Tensor,
     config: LossConfig,
+    *,
+    consistency_scale: float = 1.0,
 ) -> dict[str, torch.Tensor]:
     """Combine classification, transformation consistency, and contrastive terms."""
+    if not 0.0 <= consistency_scale <= 1.0:
+        raise ValueError("Consistency scale must be in [0, 1].")
     clean_bce = F.binary_cross_entropy_with_logits(clean.logits, labels)
     transformed_bce = F.binary_cross_entropy_with_logits(transformed.logits, labels)
     classification = 0.5 * (clean_bce + transformed_bce)
-    consistency = F.smooth_l1_loss(transformed.logits, clean.logits.detach())
+    # Probability consistency is bounded even when BCE increases the absolute
+    # logit margin. This prevents a widening clean/transformed logit scale from
+    # dominating the objective while preserving the clean branch as teacher.
+    consistency = F.smooth_l1_loss(
+        torch.sigmoid(transformed.logits),
+        torch.sigmoid(clean.logits.detach()),
+    )
     contrastive = supervised_contrastive_loss(
         clean.projections,
         transformed.projections,
@@ -55,7 +65,7 @@ def robust_detection_loss(
     )
     total = (
         config.classification_weight * classification
-        + config.consistency_weight * consistency
+        + config.consistency_weight * consistency_scale * consistency
         + config.contrastive_weight * contrastive
     )
     return {
@@ -64,5 +74,6 @@ def robust_detection_loss(
         "clean_bce": clean_bce.detach(),
         "transformed_bce": transformed_bce.detach(),
         "consistency": consistency.detach(),
+        "consistency_scale": consistency.new_tensor(consistency_scale),
         "contrastive": contrastive.detach(),
     }

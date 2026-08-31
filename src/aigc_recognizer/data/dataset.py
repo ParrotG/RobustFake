@@ -15,6 +15,67 @@ from aigc_recognizer.config import AppConfig
 from aigc_recognizer.data.transforms import RobustPairTransform
 
 
+def canonical_group_name(value: object, field: str) -> str:
+    """Normalize reporting aliases without changing manifest provenance."""
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    compact = "".join(character for character in raw.casefold() if character.isalnum())
+    if field == "real_source":
+        aliases = {
+            "na": "unknown",
+            "imagenet": "imagenet",
+            "laion": "laion",
+            "laion5b": "laion",
+            "landscapeshq": "landscapeshq",
+            "vision": "vision",
+            "celebahq": "celebahq",
+            "celebhq": "celebahq",
+        }
+        return aliases.get(compact, compact)
+    if field == "generator_family":
+        aliases = {
+            "diffusionbased": "diffusion",
+            "ganbased": "gan",
+            "otherbased": "other",
+        }
+        return aliases.get(compact, compact)
+    if field == "source_dataset":
+        return raw.casefold().replace("-", "_").replace(" ", "_")
+    return compact
+
+
+def canonical_generator_family(value: object, architecture: object) -> str:
+    """Unify source-specific family taxonomies and infer known missing families."""
+    family = canonical_group_name(value, "generator_family")
+    if family in {"latdiff", "pixdiff"}:
+        return "diffusion"
+    if family not in {"", "unknown"}:
+        return family
+    normalized_architecture = canonical_group_name(architecture, "architecture")
+    diffusion_architectures = {
+        "adm",
+        "ddim",
+        "ddpm",
+        "fluxschnell",
+        "glide",
+        "imagen",
+        "kandinsky22",
+        "latdiff",
+        "pixartsigma",
+        "pixdiff",
+        "sd14",
+        "sd15",
+        "sdxl",
+        "vqdm",
+        "wuerstchen",
+        "wukong",
+    }
+    if normalized_architecture in diffusion_architectures:
+        return "diffusion"
+    return family or "unknown"
+
+
 def validate_preparation(config: AppConfig) -> dict[str, Any]:
     """Reject absent or incomplete acquisition state before model initialization."""
     manifest_path = Path(config.data.manifest_path)
@@ -89,7 +150,9 @@ def load_manifest(path: str | Path, split: str) -> list[dict[str, Any]]:
 class AIGCManifestDataset(Dataset[dict[str, Any]]):
     """Load original images and create paired robust views online."""
 
-    def __init__(self, config: AppConfig, split: str) -> None:
+    def __init__(
+        self, config: AppConfig, split: str, *, deterministic_variant: int | None = None
+    ) -> None:
         if split not in {"train", "val", "val_id", "val_dg"}:
             raise ValueError("Dataset split must be train, val, val_id, or val_dg.")
         self.config = config
@@ -97,6 +160,7 @@ class AIGCManifestDataset(Dataset[dict[str, Any]]):
         self.records = load_manifest(config.data.manifest_path, split)
         self.root = Path(config.data.output_dir)
         self.transform = RobustPairTransform(config)
+        self.deterministic_variant = deterministic_variant
 
     def __len__(self) -> int:
         return len(self.records)
@@ -107,27 +171,65 @@ class AIGCManifestDataset(Dataset[dict[str, Any]]):
         ).hexdigest()
         return int(digest[:16], 16)
 
+    def _transform_seed(self, record_id: str) -> int | None:
+        if self.split != "train":
+            return self._validation_seed(record_id)
+        if self.deterministic_variant is None:
+            return None
+        digest = hashlib.sha256(
+            f"{self.config.project.seed}:cache:{self.deterministic_variant}:{record_id}".encode(
+                "utf-8"
+            )
+        ).hexdigest()
+        return int(digest[:16], 16)
+
     def __getitem__(self, index: int) -> dict[str, Any]:
         record = self.records[index]
+        label = int(record["label"])
         image_path = self.root / record["path"]
         try:
             with Image.open(image_path) as source:
                 image = source.copy()
         except (OSError, ValueError) as exc:
             raise RuntimeError(f"Failed to decode training image: {image_path}") from exc
-        seed = self._validation_seed(record["id"]) if self.split != "train" else None
+        seed = self._transform_seed(record["id"])
         views = self.transform(image, seed=seed)
         return {
             **views,
-            "label": torch.tensor(float(record["label"]), dtype=torch.float32),
+            "label": torch.tensor(float(label), dtype=torch.float32),
             "id": record["id"],
-            "source_dataset": str(record.get("source_dataset", "unknown")),
-            "real_source": str(record.get("real_source", "")),
-            "generator_family": str(record.get("generator_family", "")),
-            "architecture": str(record.get("architecture", record.get("generator", "unknown"))),
-            "domain": str(
-                record.get("real_source")
-                if int(record["label"]) == 0
-                else record.get("architecture", record.get("generator", "unknown"))
+            "source_dataset": canonical_group_name(
+                record.get("source_dataset", "unknown"), "source_dataset"
+            ),
+            "real_source": (
+                canonical_group_name(record.get("real_source", "unknown"), "real_source")
+                if label == 0
+                else ""
+            ),
+            "generator_family": (
+                canonical_generator_family(
+                    record.get("generator_family", "unknown"),
+                    record.get("architecture", record.get("generator", "unknown")),
+                )
+                if label == 1
+                else ""
+            ),
+            "architecture": (
+                canonical_group_name(
+                    record.get("architecture", record.get("generator", "unknown")),
+                    "architecture",
+                )
+                if label == 1
+                else ""
+            ),
+            "domain": canonical_group_name(
+                (
+                    record.get("real_source", "unknown")
+                    if label == 0
+                    else record.get(
+                        "architecture", record.get("generator", "unknown")
+                    )
+                ),
+                "real_source" if label == 0 else "architecture",
             ),
         }

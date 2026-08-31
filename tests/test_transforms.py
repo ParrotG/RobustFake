@@ -1,4 +1,5 @@
 from pathlib import Path
+import random
 
 import torch
 from PIL import Image
@@ -24,9 +25,25 @@ def test_paired_transform_has_expected_shape_and_is_deterministic() -> None:
     assert torch.isfinite(first["transformed_views"]).all()
 
 
-def test_standardization_is_deterministic_and_preserves_base_dimensions() -> None:
-    import random
+def test_global_view_square_crop_does_not_expose_letterbox_padding() -> None:
+    config = load_config(DEFAULT_CONFIG)
+    config.views.input_size = 32
+    transform = RobustPairTransform(config)
+    image = Image.new("RGB", (80, 40), (255, 0, 0))
 
+    global_geometry, local_geometry = transform._geometries(image, random.Random(9))
+    assert global_geometry.crop_box is not None
+    assert local_geometry.crop_box is not None
+    global_width = global_geometry.crop_box[2] - global_geometry.crop_box[0]
+    global_height = global_geometry.crop_box[3] - global_geometry.crop_box[1]
+    assert global_width == global_height
+
+    rendered = transform._render(image, global_geometry)
+    assert rendered.size == (32, 32)
+    assert rendered.getextrema() == ((255, 255), (0, 0), (0, 0))
+
+
+def test_standardization_is_deterministic_and_preserves_base_dimensions() -> None:
     config = load_config(DEFAULT_CONFIG)
     config.standardization.application_probability = 1.0
     transform = RobustPairTransform(config)
@@ -41,8 +58,6 @@ def test_standardization_is_deterministic_and_preserves_base_dimensions() -> Non
 
 
 def test_disabled_standardization_is_identity() -> None:
-    import random
-
     config = load_config(DEFAULT_CONFIG)
     config.standardization.enabled = False
     transform = RobustPairTransform(config)

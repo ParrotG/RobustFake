@@ -29,6 +29,7 @@ dev = [
 [project.scripts]
 aigc-prepare = "aigc_recognizer.data.mixed:main"
 aigc-train = "aigc_recognizer.train:main"
+aigc-cache-features = "aigc_recognizer.feature_cache:main"
 aigc-prepare-official-eval = "aigc_recognizer.official_data:main"
 aigc-evaluate-official = "aigc_recognizer.official_eval:main"
 aigc-prepare-wildfake-eval = "aigc_recognizer.external_data:main_wildfake"

@@ -3,7 +3,7 @@ from torch import nn
 
 from aigc_recognizer.config import LossConfig, ModelConfig
 from aigc_recognizer.losses import robust_detection_loss
-from aigc_recognizer.model import FrozenClipDetector
+from aigc_recognizer.model import DetectorOutput, FrozenClipDetector
 
 
 class DummyVisualEncoder(nn.Module):
@@ -14,6 +14,26 @@ class DummyVisualEncoder(nn.Module):
 
     def forward(self, images: torch.Tensor) -> torch.Tensor:
         return self.projection(images.mean(dim=(-1, -2)))
+
+
+class DummyIntermediateEncoder(DummyVisualEncoder):
+    def __init__(self, output_dim: int, intermediate_dim: int) -> None:
+        super().__init__(output_dim)
+        self.intermediate_projection = nn.Linear(3, intermediate_dim)
+
+    def forward_intermediates(
+        self,
+        images: torch.Tensor,
+        *,
+        indices: list[int],
+        **_kwargs: object,
+    ) -> dict[str, object]:
+        pooled = images.mean(dim=(-1, -2))
+        prefix = self.intermediate_projection(pooled).unsqueeze(1)
+        return {
+            "image_features": self.projection(pooled),
+            "image_intermediates_prefix": [prefix + index for index in indices],
+        }
 
 
 def test_model_is_view_permutation_invariant_and_backbone_is_frozen() -> None:
@@ -59,4 +79,60 @@ def test_paired_forward_matches_separate_forward_calls() -> None:
     assert torch.allclose(transformed.logits, expected_transformed.logits, atol=1e-6)
     assert torch.allclose(
         transformed.projections, expected_transformed.projections, atol=1e-6
+    )
+
+
+def test_multilayer_online_and_cached_forward_match() -> None:
+    config = ModelConfig(
+        embedding_dim=8,
+        intermediate_layers=[0, 2],
+        intermediate_dim=5,
+        head_dim=6,
+        projection_dim=4,
+        dropout=0.0,
+    )
+    model = FrozenClipDetector(DummyIntermediateEncoder(8, 5), config).eval()
+    views = torch.randn(3, 2, 3, 8, 8)
+
+    encoded = model.encode_views(views)
+    online = model(views)
+    cached = model.forward_encoded(encoded)
+
+    assert encoded.final.shape == (3, 2, 8)
+    assert encoded.intermediate is not None
+    assert encoded.intermediate.shape == (3, 2, 2, 5)
+    assert torch.allclose(online.logits, cached.logits, atol=1e-6)
+    cached.logits.sum().backward()
+    assert model.intermediate_projections[0].weight.grad is not None
+    assert model.layer_gate is not None
+    assert model.layer_gate.weight.grad is not None
+
+
+def test_probability_consistency_is_bounded_and_respects_ramp_scale() -> None:
+    projections = torch.nn.functional.normalize(torch.randn(2, 4), dim=-1)
+    clean = DetectorOutput(
+        logits=torch.tensor([100.0, -100.0]),
+        features=torch.zeros(2, 4),
+        projections=projections,
+    )
+    transformed = DetectorOutput(
+        logits=torch.tensor([-100.0, 100.0]),
+        features=torch.zeros(2, 4),
+        projections=projections,
+    )
+    labels = torch.tensor([1.0, 0.0])
+    config = LossConfig(contrastive_weight=0.0)
+
+    disabled = robust_detection_loss(
+        clean, transformed, labels, config, consistency_scale=0.0
+    )
+    enabled = robust_detection_loss(
+        clean, transformed, labels, config, consistency_scale=1.0
+    )
+
+    assert enabled["consistency"] <= 0.5
+    assert torch.allclose(
+        enabled["total"] - disabled["total"],
+        config.consistency_weight * enabled["consistency"],
+        atol=1e-5,
     )

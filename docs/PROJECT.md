@@ -10,16 +10,16 @@
 
 ### 2.1 基础模型
 
-使用 `open_clip` 提供的 `ViT-B-16/openai` 视觉编码器。文本编码器不会保留在训练模型中。视觉编码器始终处于 `eval` 状态且所有参数的 `requires_grad=False`，checkpoint 不重复保存冻结权重。
+使用 `open_clip` 提供的 `ViT-B-16-quickgelu/openai` 视觉编码器，使激活函数与 OpenAI 原始权重的训练架构一致。文本编码器不会保留在训练模型中。视觉编码器始终处于 `eval` 状态且所有参数的 `requires_grad=False`，checkpoint 不重复保存冻结权重。
 
 ### 2.2 双视图检测头
 
 每张图片构造两个共享 backbone 的视图：
 
-1. 保持完整构图的等比例缩放和 padding global view。
+1. 覆盖短边 90%–100% 的宽上下文方形 global view，避免固定 padding 暴露与标签相关的原始宽高比。
 2. 从原图随机选择 50%–90% 范围的方形 local view。
 
-两个 CLIP embedding 经过 L2 标准化后，对 view 维度计算 mean 和 standard deviation。二者拼接后进入 `LayerNorm → Linear → GELU → Dropout` 特征头，再产生图片级 logit。mean/std 聚合对视图顺序不敏感，并同时表达公共证据和区域间不一致性。
+默认在同一次 CLIP 前向中提取最终 projected embedding，以及第 4、7、10、12 个 transformer block 的归一化 CLS token。中间层经过可训练线性投影统一到 512 维，再由样本相关的 softmax gate 与最终层融合。融合后对 view 维度计算 mean 和 standard deviation，再进入 `LayerNorm → Linear → GELU → Dropout` 检测头。该结构保留最终层语义，同时允许中间层局部证据参与决策；将 `model.intermediate_layers` 设为空列表即可恢复旧的最终层模型。
 
 训练额外包含 projection head，只用于监督式对比损失。
 
@@ -31,9 +31,11 @@
 
 ```text
 L = 1.0 * mean(BCE_clean, BCE_transformed)
-  + 0.5 * SmoothL1(logit_transformed, stop_grad(logit_clean))
-  + 0.1 * supervised_contrastive_loss
+  + ramp(epoch) * 0.1 * SmoothL1(sigmoid(logit_transformed), stop_grad(sigmoid(logit_clean)))
+  + 0.05 * supervised_contrastive_loss
 ```
+
+一致性项在前三个 epoch 线性 ramp-up，并作用于有界概率而非无界 logit，避免分类 margin 增长时 clean/transformed logit 的绝对差持续主导总损失。
 
 题目要求的所有增强均在线生成。默认 transformed 分支有 25% 保持 clean、50% 使用一个操作、25% 组合两个不同操作。还以较低权重加入 double-JPEG、WebP 和多种 resize 插值核。
 
@@ -87,12 +89,13 @@ WildFake 通过 metadata-first 和并行 ZIP HTTP Range 获取；两个 Hugging 
 - `mixed_data`：四来源固定 revision、硬配额、留出域、平方根分层、缓存/网络边界、全局去重和外部 denylist。
 - `standardization`：标签无关 resize/codec 概率、范围和权重。
 - `nuisance_audit`：低层探针的特征尺寸与分类器参数。
-- `views`：输入尺寸、local crop 比例、padding 和插值。
+- `views`：输入尺寸、global/local crop 比例、透明图层合成底色和插值。
 - `augmentations`：题目变换范围、操作数量概率和额外编码增强。
 - `model`：backbone 身份、embedding/head/projection 维度和 dropout。
-- `loss`：三类损失权重与温度。
+- `loss`：三类损失权重、一致性 ramp-up 和对比温度。
 - `training`：epoch、micro-batch、梯度累积、DataLoader 预取、AMP、优化器和恢复路径。
 - `output`：运行产物目录和 checkpoint 策略。
+- `feature_cache`：缓存根目录、训练变体数、FP16/FP32、分片、batch 和预取设置。
 
 CLI 只额外支持 `--set section.key=value`。未知 section、未知 key、错误概率和不支持的 backbone 会在下载或加载权重前报错。
 
@@ -105,10 +108,15 @@ uv run aigc-prepare-wildfake-eval --config configs/default.yaml
 uv run aigc-prepare-sid-eval --config configs/default.yaml
 hf auth login
 uv run aigc-prepare --config configs/default.yaml
-uv run aigc-train --config configs/default.yaml
+uv run aigc-cache-features --config configs/default.yaml
+uv run aigc-train --config configs/default.yaml --set feature_cache.use_for_training=true
 ```
 
-当前默认训练使用 micro-batch 32、梯度累积 1 和 8 个 DataLoader worker，有效 batch size 为 32。clean/transformed 张量会合并成一次较大的 CLIP 前向，以减少小 kernel 和两次串行调用造成的 GPU 空隙。由于视觉主干冻结且前向位于 `no_grad` 中，显存占用本来就会显著低于端到端微调；判断性能时应同时观察每秒样本数和 GPU compute utilization，而不是以占满显存为目标。内存受限时应优先降低 `training.num_workers` 和 `training.batch_size`。
+特征缓存按 manifest 内容、随机种子、backbone/权重、中间层、视图、标准化和增强配置生成 SHA-256 身份目录。train 的两个变体使用 `seed + variant + record_id` 确定性生成，两个 validation split 各缓存一个固定变体。每个分片先原子写入再更新 `cache_manifest.json`，中断后只继续未完成的连续后缀，不重复追加记录。缓存保存 clean/transformed、global/local 的最终层与中间层逐 view 特征，因此修改检测头、loss、学习率或 epoch 不会使缓存失效。默认四个中间层、FP16 和两个 train 变体约占 3.9GiB，另有少量元数据与序列化开销。
+
+设置 `feature_cache.use_for_training=true` 后，训练只加载可训练融合层和检测头，不加载 CLIP，也不启动图像 DataLoader worker；每次读取 train record 时从两个缓存变体中随机选择一个。默认不启用该开关，仍可运行完整在线随机增强训练。
+
+当前默认训练使用 micro-batch 64、梯度累积 1、12 个 DataLoader worker 和每 worker 1 个预取 batch，有效 batch size 为 64。clean/transformed 张量会合并成一次较大的 CLIP 前向，以减少小 kernel 和两次串行调用造成的 GPU 空隙；降低预取深度则限制 float32 视图队列的主机内存占用。由于视觉主干冻结且前向位于 `no_grad` 中，显存占用本来就会显著低于端到端微调；判断性能时应同时观察每秒样本数和 GPU compute utilization，而不是以占满显存为目标。内存受限时应优先降低 `training.num_workers` 和 `training.batch_size`。
 
 DataLoader worker 默认不跨 epoch 常驻，以限制 PIL/编码库长期运行时的内存高水位。训练入口将 `SIGTERM` 和 `SIGHUP` 转换成可清理的中断，并在所有退出路径显式关闭 worker；Linux worker 还设置父进程死亡信号，以应对终端或 IDE 只强制终止主进程的情况。如确认运行环境稳定，可设置 `training.persistent_workers=true` 减少每轮 worker 启动开销。
 
@@ -117,8 +125,8 @@ DataLoader worker 默认不跨 epoch 常驻，以限制 PIL/编码库长期运�
 ```bash
 uv run aigc-train \
   --config configs/default.yaml \
-  --set training.batch_size=8 \
-  --set training.gradient_accumulation_steps=4
+  --set training.batch_size=32 \
+  --set training.gradient_accumulation_steps=2
 ```
 
 断点恢复：
@@ -126,14 +134,14 @@ uv run aigc-train \
 ```bash
 uv run aigc-train \
   --config configs/default.yaml \
-  --set training.resume_from=artifacts/runs/clip_b16_multiview/last.pt
+  --set training.resume_from=artifacts/runs/clip_b16_multilayer_v3/last.pt
 ```
 
 checkpoint 包含检测头、optimizer、scheduler、AMP scaler、epoch、global step、随机状态、完整配置、数据 revision、backbone 身份和参数计数。恢复时会拒绝 backbone 或数据 revision 不一致的 checkpoint。
 
 ## 6. 验证指标与输出
 
-每轮在固定 seed 的 `val_id` 和 `val_dg` 上分别计算 clean/transformed 的 AUROC、Average Precision、Balanced Accuracy 和 F1。最佳模型分数由 ID clean/transformed AUROC 均值占 50%、DG clean/transformed AUROC 均值占 50% 组成；验证集不做重加权。训练 DataLoader 则先保证 real/fake 采样概率各 50%，再在类别内按来源/域样本量平方根加权。
+每轮在固定 seed 的 `val_id` 和 `val_dg` 上分别计算 clean/transformed 的 AUROC、Average Precision、Balanced Accuracy 和 F1。最佳模型分数由 ID clean/transformed AUROC 均值占 50%、DG clean/transformed AUROC 均值占 50% 组成；验证集不做重加权。64k train 在准备阶段已经严格保持 real/fake 平衡，并在来源硬配额内部完成平方根域分配；训练 DataLoader 只做无放回 shuffle，确保每个已准备样本每轮恰好出现一次，不再重复施加带放回域平衡。
 
 训练完成后可使用题目指定的 WildFake 展示子集做独立测试。该子集严格由元数据定义为 4,998 张 COCO val2017 真实图与 8,843 张 DALL·E Advanced 生成图，存放在 `data/evaluation/`，不会写入或复用训练 manifest：
 

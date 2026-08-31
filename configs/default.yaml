@@ -1,6 +1,6 @@
 project:
   seed: 2026
-  run_name: clip_b16_multiview
+  run_name: clip_b16_multilayer_v3
 
 data:
   repo_id: Shanmuk4622/ai-image-detection-dataset
@@ -141,6 +141,8 @@ nuisance_audit:
 
 views:
   input_size: 224
+  global_crop_scale_min: 0.90
+  global_crop_scale_max: 1.0
   local_scale_min: 0.50
   local_scale_max: 0.90
   padding_color: 127
@@ -167,28 +169,31 @@ augmentations:
   enable_webp: true
 
 model:
-  backbone_name: ViT-B-16
+  backbone_name: ViT-B-16-quickgelu
   pretrained: openai
   embedding_dim: 512
+  intermediate_layers: [3, 6, 9, 11]
+  intermediate_dim: 768
   head_dim: 256
   projection_dim: 128
-  dropout: 0.20
+  dropout: 0.10
 
 loss:
   classification_weight: 1.0
-  consistency_weight: 0.5
-  contrastive_weight: 0.1
+  consistency_weight: 0.1
+  consistency_rampup_epochs: 3
+  contrastive_weight: 0.05
   contrastive_temperature: 0.10
 
 training:
-  epochs: 12
-  batch_size: 32
+  epochs: 8
+  batch_size: 64
   gradient_accumulation_steps: 1
-  learning_rate: 0.0003
-  weight_decay: 0.0001
-  warmup_fraction: 0.10
-  num_workers: 8
-  prefetch_factor: 2
+  learning_rate: 0.0001
+  weight_decay: 0.001
+  warmup_fraction: 0.05
+  num_workers: 12
+  prefetch_factor: 1
   persistent_workers: false
   amp: true
   amp_dtype: fp16
@@ -203,6 +208,17 @@ output:
   root_dir: artifacts/runs
   save_last: true
   keep_best_only: false
+
+feature_cache:
+  root_dir: data/processed/feature_cache
+  use_for_training: false
+  train_variants: 2
+  shard_size: 2048
+  batch_size: 64
+  num_workers: 12
+  prefetch_factor: 1
+  pin_memory: true
+  dtype: float16
 
 official_evaluation:
   repo_id: hy2628982280/WildFake
@@ -227,7 +243,7 @@ official_evaluation:
   network_max_retries: 5
   network_retry_backoff: 1.0
 evaluation:
-  checkpoint_path: artifacts/runs/clip_b16_multiview/best.pt
+  checkpoint_path: artifacts/runs/clip_b16_multilayer_v3/best.pt
   batch_size: 32
   num_workers: 8
   prefetch_factor: 2

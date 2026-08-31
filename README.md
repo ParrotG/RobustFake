@@ -10,19 +10,19 @@ For the full design rationale and data policy, see [docs/PROJECT.md](docs/PROJEC
 
 ### Model
 
-The detector uses `ViT-B-16/openai` from `open_clip` as its visual backbone. Only the visual encoder is retained; the text encoder is not part of the training model. All CLIP parameters are frozen and the encoder remains in evaluation mode throughout training.
+The detector uses `ViT-B-16-quickgelu/openai` from `open_clip` as its visual backbone. The QuickGELU architecture matches the activation used to train the original OpenAI weights. Only the visual encoder is retained; the text encoder is not part of the training model. All CLIP parameters are frozen and the encoder remains in evaluation mode throughout training.
 
 Each image is represented by two spatial views:
 
-- A global view that preserves the full composition with aspect-ratio-aware resize and padding.
+- A wide-context square crop covering 90%–100% of the shorter image dimension. This avoids exposing source aspect ratio through label-correlated letterbox padding.
 - A local square crop covering 50%–90% of the shorter image dimension.
 
-Both views share the same frozen encoder. Their L2-normalized CLIP embeddings are aggregated using the view-wise mean and standard deviation:
+Both views share the same frozen encoder. The default detector extracts the final projected embedding and normalized CLS tokens from transformer blocks 4, 7, 10, and 12 in one encoder pass. Trainable projections map intermediate tokens to 512 dimensions, and a data-dependent softmax gate fuses the five layer representations before view-wise mean and standard-deviation aggregation:
 
 ```text
-global image ─┐
-              ├─ frozen CLIP ViT-B/16 ─ embeddings ─ mean/std ─ feature head ─ binary logit
-local crop ───┘                                              └─ projection head
+global image ─┐                         ┌─ final embedding ─────┐
+              ├─ frozen CLIP ViT-B/16 ─┼─ block CLS tokens ────┼─ gated layer fusion ─ mean/std ─ heads
+local crop ───┘                         └────────────────────────┘
 ```
 
 Mean/std aggregation is invariant to view order. The mean captures evidence shared across regions, while the standard deviation exposes disagreement between global and local evidence. The aggregated 1,024-dimensional representation is processed by:
@@ -31,7 +31,7 @@ Mean/std aggregation is invariant to view order. The mean captures evidence shar
 LayerNorm → Linear(1024, 256) → GELU → Dropout
 ```
 
-The resulting feature feeds a binary classifier and a training-only contrastive projection head. With the default dimensions, approximately 0.36M parameters are trainable. The implementation also enforces total parameters below 2B and trainable parameters below 5M at runtime.
+The resulting feature feeds a binary classifier and a training-only contrastive projection head. With four intermediate layers, approximately 1.94M parameters are trainable. Setting `model.intermediate_layers=[]` restores the final-layer-only 0.36M-parameter head and remains compatible with earlier checkpoints. The implementation also enforces total parameters below 2B and trainable parameters below 5M at runtime.
 
 ### Training Dataset
 
@@ -87,19 +87,21 @@ The degraded branch samples zero, one, or two distinct operations with default p
 - Center crop followed by resize.
 - Optional low-probability WebP recompression.
 
-EXIF orientation, RGB conversion, alpha compositing, aspect-ratio-aware resize/padding, and CLIP normalization are applied consistently to both classes.
+EXIF orientation, RGB conversion, alpha compositing, label-independent square cropping, resize, and CLIP normalization are applied consistently to both classes.
+
+The prepared 64k training split is already class-balanced and square-root-balanced within source quotas. Training therefore shuffles it without replacement so every prepared record is seen exactly once per epoch; domain balancing is not applied a second time through a replacement sampler.
 
 The total objective is:
 
 ```text
 L = 1.0 × mean(BCE(clean), BCE(degraded))
-  + 0.5 × SmoothL1(logit_degraded, stop_gradient(logit_clean))
-  + 0.1 × supervised_contrastive_loss
+  + ramp(epoch) × 0.1 × SmoothL1(sigmoid(logit_degraded), stop_gradient(sigmoid(logit_clean)))
+  + 0.05 × supervised_contrastive_loss
 ```
 
-The two BCE terms teach classification on both clean and transformed inputs. Logit consistency treats the clean prediction as a stable target for its degraded counterpart. The supervised contrastive term groups clean and degraded projections by real/fake label within each batch.
+The two BCE terms teach classification on both clean and transformed inputs. Bounded probability consistency treats the clean prediction as a stable target without allowing an increasing logit margin to dominate the objective; its weight ramps linearly over the first three epochs. The supervised contrastive term groups clean and degraded projections by real/fake label within each batch.
 
-Default optimization uses AdamW, cosine decay after 10% linear warmup, FP16 automatic mixed precision, gradient clipping, and early stopping. A micro-batch of 32 gives an effective batch size of 32. Clean and transformed views are combined into one encoder invocation to improve GPU occupancy while preserving the loss formulation.
+Default optimization uses AdamW, cosine decay after 5% linear warmup, FP16 automatic mixed precision, gradient clipping, and early stopping. A micro-batch of 64 gives an effective batch size of 64. The conservative `1e-4` head learning rate and `1e-3` weight decay limit logit-scale growth. Clean and transformed views are combined into one encoder invocation to improve GPU occupancy, while one prefetched batch per worker bounds host-memory pressure.
 
 ### Validation and Evaluation
 
@@ -171,19 +173,35 @@ uv run aigc-prepare \
 
 ## Training
 
-Start training with the centralized defaults:
+Precompute two deterministic train variants and one fixed copy of each validation split. Shards are FP16, atomically written, resumable, and stored under a cache identity derived from the manifest, transform configuration, seed, backbone, weights, and selected layers:
+
+```bash
+uv run aigc-cache-features --config configs/default.yaml
+```
+
+With four cached intermediate layers, the default two-train-variant cache occupies approximately 3.9GiB plus small metadata and serialization overhead.
+
+Train only the multi-layer fusion and detector heads from the cache:
+
+```bash
+uv run aigc-train \
+  --config configs/default.yaml \
+  --set feature_cache.use_for_training=true
+```
+
+Each training record randomly selects one of its cached variants per epoch. Cached training loads no CLIP weights and uses an in-memory loader with no worker processes. To run the original online stochastic pipeline instead:
 
 ```bash
 uv run aigc-train --config configs/default.yaml
 ```
 
-For a smaller micro-batch while preserving the effective batch size:
+If batch 64 exceeds the available VRAM, use a smaller micro-batch while preserving the effective batch size:
 
 ```bash
 uv run aigc-train \
   --config configs/default.yaml \
-  --set training.batch_size=8 \
-  --set training.gradient_accumulation_steps=4
+  --set training.batch_size=32 \
+  --set training.gradient_accumulation_steps=2
 ```
 
 Resume a training run from its last checkpoint:
@@ -191,7 +209,7 @@ Resume a training run from its last checkpoint:
 ```bash
 uv run aigc-train \
   --config configs/default.yaml \
-  --set training.resume_from=artifacts/runs/clip_b16_multiview/last.pt
+  --set training.resume_from=artifacts/runs/clip_b16_multilayer_v3/last.pt
 ```
 
 Resume validation rejects a checkpoint if its backbone identity or dataset revision differs from the active configuration and manifest.
@@ -257,7 +275,7 @@ data/processed/mixed_aigc_80k/
 ├── distribution_report.json Hard and nuisance bucket distributions
 └── nuisance_report.json    Informational raw/standardized low-level probe
 
-artifacts/runs/clip_b16_multiview/
+artifacts/runs/clip_b16_multilayer_v3/
 ├── best.pt                 Best trainable-head checkpoint
 ├── last.pt                 Latest optimizer/training state
 ├── metrics.jsonl           Timestamped epoch metrics

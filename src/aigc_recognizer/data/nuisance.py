@@ -165,6 +165,29 @@ def _metrics(labels: np.ndarray, probabilities: np.ndarray) -> dict[str, Any]:
     }
 
 
+def _group_metrics(labels: np.ndarray, probabilities: np.ndarray) -> dict[str, Any]:
+    """Keep single-class source cells visible with class-appropriate metrics."""
+    predictions = (probabilities >= 0.5).astype(np.int64)
+    real_count = int(np.sum(labels == 0))
+    fake_count = int(np.sum(labels == 1))
+    result: dict[str, Any] = {
+        "count": int(labels.size),
+        "real_count": real_count,
+        "fake_count": fake_count,
+        "mean_probability": float(np.mean(probabilities)),
+        "predicted_fake_rate": float(np.mean(predictions)),
+        "accuracy": float(np.mean(predictions == labels)),
+    }
+    if fake_count:
+        result["fake_recall"] = float(np.mean(predictions[labels == 1] == 1))
+    if real_count:
+        result["real_recall"] = float(np.mean(predictions[labels == 0] == 0))
+        result["false_positive_rate"] = 1.0 - result["real_recall"]
+    if real_count and fake_count:
+        result.update(_metrics(labels, probabilities))
+    return result
+
+
 def _records(path: Path) -> list[dict[str, Any]]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
 
@@ -353,8 +376,8 @@ def _probe_condition(
                 dtype=bool,
             )
             source_labels = labels[split][selected]
-            if selected.sum() and len(set(source_labels.tolist())) == 2:
-                result["per_source_dataset"][source][split] = _metrics(
+            if selected.sum():
+                result["per_source_dataset"][source][split] = _group_metrics(
                     source_labels, probabilities[split][selected]
                 )
     return result
