@@ -54,11 +54,24 @@ def test_inspect_watermark_uses_pixel_fallback_without_ocr(tmp_path: Path, monke
     Image.new("RGB", (80, 80), "black").save(image_path)
     config = load_config(DEFAULT_CONFIG)
     config.watermark.tesseract_path = "/missing/tesseract"
+    config.watermark.pixel_fallback_enabled = True
     monkeypatch.setattr("aigc_recognizer.watermark._looks_like_doubao_corner_mark", lambda *_args: True)
     result = inspect_watermark(image_path, config)
     assert result["detected"] is True
     assert result["vendors"] == ["doubao"]
     assert result["matches"][0]["source"] == "pixel:bottom_right"
+    assert result["confidence"] == "low"
+
+
+def test_pixel_fallback_is_disabled_by_default(tmp_path: Path, monkeypatch) -> None:
+    image_path = tmp_path / "bright-corner.png"
+    Image.new("RGB", (80, 80), "white").save(image_path)
+    config = load_config(DEFAULT_CONFIG)
+    config.watermark.tesseract_path = "/missing/tesseract"
+    monkeypatch.setattr("aigc_recognizer.watermark._looks_like_doubao_corner_mark", lambda *_args: True)
+    result = inspect_watermark(image_path, config)
+    assert result["detected"] is False
+    assert result["matches"] == []
 
 
 def test_watermark_is_medium_confidence_but_trusted_c2pa_wins() -> None:

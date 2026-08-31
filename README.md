@@ -134,7 +134,7 @@ uv run aigc-provenance \
   --output provenance-report.json
 ```
 
-Visible watermarks are mutable hints rather than cryptographic proof. C2PA integrity and trust take precedence whenever a valid manifest is present.
+Visible watermarks are mutable hints rather than cryptographic proof. C2PA integrity and trust take precedence whenever a valid manifest is present. OCR or provenance metadata is required for vendor attribution by default; the pixel-only corner heuristic is disabled by default because ordinary bright image content can look like a watermark. Enable `watermark.pixel_fallback_enabled: true` only for controlled experiments and treat its result as a low-confidence visual hint.
 
 Duplicate and leakage control is applied before a candidate enters the manifest. The pipeline checks provenance identity, encoded content, canonical pixels, perceptual similarity, and crop-resistant similarity. Known official-evaluation assets have priority over validation and training records, same-label duplicates are replaced from deterministic reserves, and confirmed conflicting-label duplicates fail preparation. These controls make the official result a meaningful external demonstration rather than a measure of memorised images.
 

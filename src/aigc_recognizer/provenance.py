@@ -518,6 +518,18 @@ def classify_provenance(
     if watermark and watermark.get("detected"):
         vendors = watermark.get("vendors", [])
         vendor_text = ", ".join(str(item) for item in vendors) or "known AI vendor"
+        watermark_matches = watermark.get("matches", [])
+        pixel_only = watermark.get("confidence") == "low" or (
+            bool(watermark_matches)
+            and all(str(match.get("source", "")).startswith("pixel:") for match in watermark_matches)
+        )
+        if pixel_only:
+            return {
+                "classification": "visible_ai_watermark",
+                "confidence": "low",
+                "confidence_score": 0.55,
+                "reason": f"A pixel-only corner heuristic flagged content associated with {vendor_text}; this is ambiguous and is not textual watermark evidence.",
+            }
         return {
             "classification": "visible_ai_watermark",
             "confidence": "medium",
@@ -704,6 +716,29 @@ def semantic_assessment(
     if watermark.get("detected"):
         vendors = watermark.get("vendors", [])
         vendor_text = ", ".join(str(item) for item in vendors) or "已知 AI 厂商"
+        watermark_matches = watermark.get("matches", [])
+        pixel_only = watermark.get("confidence") == "low" or (
+            bool(watermark_matches)
+            and all(str(match.get("source", "")).startswith("pixel:") for match in watermark_matches)
+        )
+        if pixel_only:
+            return result(
+                assessment="possible_ai_watermark",
+                synthetic_likelihood="possible",
+                capture_provenance="not_verified",
+                confidence="low",
+                primary_evidence="pixel_watermark_hint",
+                verdict="unknown",
+                verdict_label_zh="无法确定（像素水印提示）",
+                c2pa_conclusion=(
+                    "未发现可用于判断的 C2PA 声明。"
+                    if not c2pa.get("manifest_present")
+                    else "存在 C2PA，但未形成可用于判断真实来源的有效结论。"
+                ),
+                reason=f"像素回退规则在图像角落发现可能与 {vendor_text} 相关的形状，但该规则无法证明存在文字水印或厂商来源。",
+                limitations=["纯像素形状可能来自普通图像内容，不能单独判定 AI 生成。", "应使用 OCR、C2PA 或 EXIF 文本证据复核。"],
+                ai_confidence=0.55,
+            )
         return result(
             assessment="visible_ai_watermark",
             synthetic_likelihood="likely",

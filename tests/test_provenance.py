@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from PIL import Image
 
 from aigc_recognizer.config import load_config
-from aigc_recognizer.provenance import _exif_evidence, inspect_image, inspect_path, main, semantic_assessment
+from aigc_recognizer.provenance import _exif_evidence, classify_provenance, inspect_image, inspect_path, main, semantic_assessment
 
 
 DEFAULT_CONFIG = Path(__file__).parents[1] / "configs" / "default.yaml"
@@ -88,6 +88,22 @@ def test_c2pa_semantic_assessment_prioritizes_verified_source_type() -> None:
     assert result["confidence"] == "high"
     assert result["ai_confidence"] == 0.02
     assert result["basis"] == "trusted_c2pa"
+
+
+def test_pixel_only_watermark_hint_does_not_make_fake_decision() -> None:
+    exif = {"ai_software_markers": []}
+    c2pa = {"integrity_valid": False, "manifest_present": False}
+    watermark = {
+        "detected": True,
+        "vendors": ["doubao"],
+        "confidence": "low",
+        "matches": [{"vendor": "doubao", "source": "pixel:bottom_right"}],
+    }
+    decision = classify_provenance(exif, c2pa, watermark)
+    assert decision["confidence_score"] == 0.55
+    assessment = semantic_assessment(exif, c2pa, decision, watermark)
+    assert assessment["verdict"] == "unknown"
+    assert assessment["ai_confidence"] == 0.55
 
 
 def test_heic_registers_pillow_heif_before_open(tmp_path: Path, monkeypatch) -> None:

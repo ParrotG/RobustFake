@@ -306,6 +306,10 @@ class ProvenanceConfig:
 class WatermarkConfig:
     enabled: bool = True
     ocr_enabled: bool = True
+    # Pixel-only corner heuristics are ambiguous: bright scene content can
+    # resemble a watermark. Keep vendor attribution opt-in unless OCR or
+    # provenance metadata provides textual evidence.
+    pixel_fallback_enabled: bool = False
     tesseract_path: str | None = None
     ocr_timeout_seconds: float = 12.0
     max_dimension: int = 1600

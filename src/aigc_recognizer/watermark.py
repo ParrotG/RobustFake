@@ -287,10 +287,10 @@ def inspect_watermark(path: str | Path, config: AppConfig | WatermarkConfig) -> 
                 region_report["status"] = "ok"
             region_reports.append(region_report)
 
-    # The Chinese lockup is often too small or low-contrast for OCR.  This
-    # shape fallback identifies the known Doubao placement without requiring a
-    # language pack; it is only accepted in the bottom-right region.
-    if _looks_like_doubao_corner_mark(image, settings.corner_fraction):
+    # Pixel-only shape matching is inherently ambiguous. It is opt-in for
+    # controlled experiments and must never silently attribute generic bright
+    # corner content to a vendor in normal provenance scans.
+    if settings.pixel_fallback_enabled and _looks_like_doubao_corner_mark(image, settings.corner_fraction):
         all_matches.append(
             {
                 "vendor": "doubao",
@@ -309,6 +309,7 @@ def inspect_watermark(path: str | Path, config: AppConfig | WatermarkConfig) -> 
             seen.add(key)
             unique_matches.append(match)
     status = "ok" if settings.ocr_enabled and not ocr_errors else (ocr_errors[0] if ocr_errors else "ocr_disabled")
+    pixel_only = bool(unique_matches) and all(str(match.get("source", "")).startswith("pixel:") for match in unique_matches)
     return {
         "available": True,
         "status": status,
@@ -316,7 +317,7 @@ def inspect_watermark(path: str | Path, config: AppConfig | WatermarkConfig) -> 
         "matches": unique_matches,
         "vendors": sorted({match["vendor"] for match in unique_matches}),
         "regions": region_reports,
-        "confidence": "medium" if unique_matches else "none",
+        "confidence": "low" if pixel_only else ("medium" if unique_matches else "none"),
         "warning": "可见水印是线索，不是不可伪造的来源证明；水印可能被裁剪、复制或后加。",
     }
 

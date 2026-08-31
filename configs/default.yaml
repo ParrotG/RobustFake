@@ -227,6 +227,7 @@ provenance:
 watermark:
   enabled: true
   ocr_enabled: true
+  pixel_fallback_enabled: false
   tesseract_path: null
   ocr_timeout_seconds: 12.0
   max_dimension: 1600
