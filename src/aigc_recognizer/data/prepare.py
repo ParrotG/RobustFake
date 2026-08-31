@@ -1,4 +1,4 @@
-"""Stream and stratify a bounded Community Forensics training subset."""
+"""Prepare a reproducible paired subset from a pinned Hugging Face dataset."""
 
 from __future__ import annotations
 
@@ -6,13 +6,14 @@ import hashlib
 import io
 import json
 import logging
-import math
 import os
+import random
 import signal
 import tempfile
 import time
 import warnings
-from collections import Counter
+from collections import Counter, defaultdict
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -23,15 +24,16 @@ from aigc_recognizer.config import AppConfig, config_argument_parser, load_confi
 
 LOGGER = logging.getLogger(__name__)
 GIB = 1024**3
+SPLITS = ("train", "val", "test")
 
 
 class PreparationError(RuntimeError):
-    """Raised when safe sampling cannot satisfy the configured quotas."""
+    """Raised when safe paired acquisition cannot be completed."""
 
 
 @dataclass(frozen=True)
 class DecodedImage:
-    """Validated image information used during acquisition."""
+    """Safe decoded-image properties shared with official data preparation."""
 
     width: int
     height: int
@@ -39,116 +41,19 @@ class DecodedImage:
     perceptual_hash: str
 
 
-def stable_bucket(value: str, buckets: int = 100) -> int:
-    """Map a string to a stable bucket independently of Python hash randomization."""
-    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()
-    return int(digest[:8], 16) % buckets
-
-
-def normalize_architecture(value: object) -> str:
-    """Normalize the dataset architecture value to a configured training group."""
-    architecture = str(value or "other")
-    return architecture if architecture in {"LatDiff", "GAN", "PixDiff"} else "other"
-
-
-def effective_real_source(row: Mapping[str, Any]) -> str:
-    """Resolve the real source from the field actually populated by this dataset."""
-    real_source = str(row.get("real_source") or "").strip()
-    if real_source.casefold() in {"", "n/a", "na", "none", "unknown"}:
-        return str(row.get("model_name") or "unknown").strip()
-    return real_source
-
-
-def architecture_targets(total: int, ratios: Mapping[str, float]) -> dict[str, int]:
-    """Convert fractional architecture targets to integers with an exact total."""
-    raw = {name: total * ratio for name, ratio in ratios.items()}
-    targets = {name: math.floor(value) for name, value in raw.items()}
-    remainder = total - sum(targets.values())
-    order = sorted(raw, key=lambda name: raw[name] - targets[name], reverse=True)
-    for name in order[:remainder]:
-        targets[name] += 1
-    return targets
-
-
-def row_split(row: Mapping[str, Any], train_generator_percent: int) -> str:
-    """Assign fake images by generator and real images by stable source identity."""
-    label = int(row.get("label", -1))
-    if label == 1:
-        model_name = str(row.get("model_name") or "unknown-generator")
-        if str(row.get("subset") or "").casefold() == "systematic":
-            identity = model_name
-        else:
-            identity = f"{model_name}|{row.get('image_name') or row.get('id') or 'unknown-image'}"
-    else:
-        identity = "|".join(
-            [
-                str(row.get("image_name") or row.get("id") or "unknown-image"),
-                effective_real_source(row),
-            ]
-        )
-    return "train" if stable_bucket(identity) < train_generator_percent else "val"
-
-
-def is_forbidden(row: Mapping[str, Any], config: AppConfig) -> bool:
-    """Apply challenge leakage guards and content safety filters."""
-    label = int(row.get("label", -1))
-    if label not in {0, 1}:
-        return True
-    if config.data.exclude_nsfw and bool(row.get("nsfw_flag", False)):
-        return True
-    if label == 1:
-        model_name = str(row.get("model_name") or "").casefold()
-        return any(token.casefold() in model_name for token in config.data.excluded_generator_tokens)
-    real_source = effective_real_source(row).casefold()
-    return any(token.casefold() in real_source for token in config.data.excluded_real_source_tokens)
-
-
-def extract_image_bytes(value: Any) -> bytes:
-    """Extract bytes from the representations emitted by Parquet readers."""
-    if isinstance(value, bytes):
-        return value
-    if isinstance(value, bytearray):
-        return bytes(value)
-    if isinstance(value, memoryview):
-        return value.tobytes()
-    if isinstance(value, Mapping) and value.get("bytes") is not None:
-        return bytes(value["bytes"])
-    raise PreparationError("The image_data field does not contain in-memory image bytes.")
-
-
 def validate_and_describe_image(image_bytes: bytes, config: AppConfig) -> DecodedImage:
-    """Safely decode an image and compute its perceptual identity."""
-    import imagehash
-
-    Image.MAX_IMAGE_PIXELS = config.data.max_image_pixels
-    try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", Image.DecompressionBombWarning)
-            with Image.open(io.BytesIO(image_bytes)) as image:
-                image.load()
-                image = ImageOps.exif_transpose(image).convert("RGB")
-                width, height = image.size
-                if width <= 0 or height <= 0:
-                    raise PreparationError("Decoded image has an invalid size.")
-                image_format = (image.format or "").lower()
-                perceptual_hash = str(
-                    imagehash.phash(image, hash_size=config.data.perceptual_hash_size)
-                )
-    except (Image.DecompressionBombError, Image.DecompressionBombWarning) as exc:
-        raise PreparationError("Image exceeds the configured safe pixel limit.") from exc
-    except (UnidentifiedImageError, OSError, ValueError) as exc:
-        raise PreparationError("Image decoding failed.") from exc
-    return DecodedImage(width, height, image_format, perceptual_hash)
+    """Validate arbitrary evaluation image bytes without imposing training dimensions."""
+    description = _describe_image(image_bytes, config)
+    return DecodedImage(
+        width=int(description["width"]),
+        height=int(description["height"]),
+        image_format=str(description["format"]),
+        perceptual_hash=str(description["perceptual_hash"]),
+    )
 
 
-def _extension(format_hint: object, decoded_format: str) -> str:
-    value = str(format_hint or decoded_format or "bin").casefold()
-    aliases = {"jpeg": "jpg", "tif": "tiff"}
-    value = aliases.get(value, value)
-    return value if value in {"jpg", "png", "webp", "bmp", "tiff"} else "bin"
-
-
-def _atomic_write_text(path: Path, content: str) -> None:
+def atomic_write_text(path: Path, content: str) -> None:
+    """Atomically replace one UTF-8 text file."""
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
@@ -163,506 +68,718 @@ def _atomic_write_text(path: Path, content: str) -> None:
 
 
 def _atomic_write_bytes(path: Path, content: bytes) -> None:
-    """Write image bytes without exposing a partially written destination."""
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
         with os.fdopen(descriptor, "wb") as handle:
             handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
         os.replace(temporary_name, path)
     finally:
         if os.path.exists(temporary_name):
             os.unlink(temporary_name)
 
 
-def _config_fingerprint(config: AppConfig, revision: str) -> str:
-    data_config = config.to_dict()["data"]
-    for operational_key in (
-        "audit_path",
-        "checkpoint_every_scanned",
-        "hf_auth",
-        "manifest_path",
-        "max_download_gb",
-        "max_scanned",
-        "network_max_retries",
-        "network_retry_base_seconds",
-        "output_dir",
-    ):
-        data_config.pop(operational_key, None)
-    relevant = {
-        "data": data_config,
-        "seed": config.project.seed,
-        "revision": revision,
-    }
-    payload = json.dumps(relevant, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-
-def _targets(config: AppConfig) -> tuple[dict[tuple[str, int], int], dict[str, dict[str, int]]]:
-    class_targets = {
-        ("train", 0): config.data.train_per_class,
-        ("train", 1): config.data.train_per_class,
-        ("val", 0): config.data.val_per_class,
-        ("val", 1): config.data.val_per_class,
-    }
-    fake_targets = {
-        "train": architecture_targets(
-            config.data.train_per_class, config.data.architecture_ratios
-        ),
-        "val": architecture_targets(config.data.val_per_class, config.data.architecture_ratios),
-    }
-    return class_targets, fake_targets
-
-
-def _quotas_complete(
-    class_counts: Counter[tuple[str, int]],
-    architecture_counts: Counter[tuple[str, str]],
-    class_targets: Mapping[tuple[str, int], int],
-    fake_targets: Mapping[str, Mapping[str, int]],
-) -> bool:
-    return all(class_counts[key] >= value for key, value in class_targets.items()) and all(
-        architecture_counts[(split, architecture)] >= target
-        for split, targets in fake_targets.items()
-        for architecture, target in targets.items()
-    )
-
-
-def sample_rows(
-    rows: Iterable[Mapping[str, Any]],
-    config: AppConfig,
-    revision: str,
-) -> dict[str, Any]:
-    """Consume a bounded iterable and atomically produce a stratified manifest."""
-    output_dir = Path(config.data.output_dir)
-    manifest_path = Path(config.data.manifest_path)
-    audit_path = Path(config.data.audit_path)
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    class_targets, fake_targets = _targets(config)
-    fingerprint = _config_fingerprint(config, revision)
-    class_counts: Counter[tuple[str, int]] = Counter()
-    architecture_counts: Counter[tuple[str, str]] = Counter()
-    model_counts: Counter[tuple[str, str]] = Counter()
-    real_source_counts: Counter[tuple[str, str]] = Counter()
-    skipped: Counter[str] = Counter()
-    seen_sha256: set[str] = set()
-    seen_perceptual_hashes: set[str] = set()
-    records: dict[str, dict[str, Any]] = {}
-    selected_bytes = 0
-    scanned = 0
-    resume_scanned = 0
-    stop_reason = "maximum rows scanned"
-
-    existing_audit: dict[str, Any] | None = None
-    if manifest_path.is_file() and audit_path.is_file():
-        try:
-            existing_audit = json.loads(audit_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError) as exc:
-            raise PreparationError(f"Existing audit cannot be read: {audit_path}") from exc
-        fingerprint_matches = existing_audit.get("sampling_config_sha256") == fingerprint
-        if fingerprint_matches:
-            if bool(existing_audit.get("complete")):
-                LOGGER.info("The prepared dataset is already complete; no download is needed.")
-                return existing_audit
-            for line in manifest_path.read_text(encoding="utf-8").splitlines():
-                if not line.strip():
-                    continue
-                record = json.loads(line)
-                content_id = str(record["id"])
-                image_path = output_dir / str(record["path"])
-                if not image_path.is_file():
-                    raise PreparationError(f"Resume image is missing: {image_path}")
-                records[content_id] = record
-                seen_sha256.add(content_id)
-                perceptual_hash = record.get("perceptual_hash")
-                if perceptual_hash:
-                    seen_perceptual_hashes.add(str(perceptual_hash))
-                selected_bytes += image_path.stat().st_size
-                split, label = str(record["split"]), int(record["label"])
-                class_counts[(split, label)] += 1
-                if label == 1:
-                    architecture_counts[(split, str(record["architecture"]))] += 1
-                    model_counts[(split, str(record["model_name"]))] += 1
-                else:
-                    real_source_counts[(split, str(record["real_source"]))] += 1
-            skipped.update(existing_audit.get("skipped", {}))
-            resume_scanned = int(existing_audit.get("scanned", 0))
-            scanned = resume_scanned
-            LOGGER.info(
-                "Resuming preparation from %d selected images after %d scanned rows.",
-                len(records),
-                resume_scanned,
-            )
-        else:
-            LOGGER.warning(
-                "Existing partial data uses a different sampling configuration; "
-                "the manifest will be rebuilt while matching image files are reused."
-            )
-
-    def make_audit(complete: bool, reason: str) -> dict[str, Any]:
-        audit = {
-            "complete": complete,
-            "source_mode": "pinned_local_shards",
-            "stop_reason": reason,
-            "source_revision": revision,
-            "sampling_config_sha256": fingerprint,
-            "scanned": scanned,
-            "selected": len(records),
-            "selected_bytes": selected_bytes,
-            "class_targets": {f"{split}:{label}": value for (split, label), value in class_targets.items()},
-            "class_counts": {f"{split}:{label}": class_counts[(split, label)] for split, label in class_targets},
-            "fake_architecture_targets": fake_targets,
-            "fake_architecture_counts": {
-                split: {
-                    architecture: architecture_counts[(split, architecture)]
-                    for architecture in targets
-                }
-                for split, targets in fake_targets.items()
-            },
-            "unique_fake_generators": {
-                split: len({model for (record_split, model), count in model_counts.items() if record_split == split and count})
-                for split in ("train", "val")
-            },
-            "skipped": dict(skipped),
-        }
-        return audit
-
-    def checkpoint(complete: bool, reason: str) -> dict[str, Any]:
-        manifest_lines = [
-            json.dumps(record, sort_keys=True, ensure_ascii=False)
-            for record in sorted(
-                records.values(), key=lambda item: (item["split"], item["label"], item["id"])
-            )
-        ]
-        _atomic_write_text(
-            manifest_path, "\n".join(manifest_lines) + ("\n" if manifest_lines else "")
-        )
-        audit = make_audit(complete, reason)
-        _atomic_write_text(audit_path, json.dumps(audit, indent=2, sort_keys=True) + "\n")
-        return audit
-
-    try:
-        for row_position, row in enumerate(rows, start=1):
-            if row_position <= resume_scanned:
-                continue
-            if row_position > config.data.max_scanned:
-                scanned = config.data.max_scanned
-                break
-            if row_position % config.data.checkpoint_every_scanned == 0:
-                scanned = row_position - 1
-                checkpoint(False, "periodic checkpoint")
-                LOGGER.info(
-                    "Preparation checkpoint: scanned=%d selected=%d stored=%.2f GiB.",
-                    scanned,
-                    len(records),
-                    selected_bytes / GIB,
-                )
-            scanned = row_position
-            if is_forbidden(row, config):
-                skipped["filtered"] += 1
-                continue
-
-            label = int(row["label"])
-            split = row_split(row, config.data.train_generator_percent)
-            if class_counts[(split, label)] >= class_targets[(split, label)]:
-                skipped["class quota full"] += 1
-                continue
-
-            architecture = "real" if label == 0 else normalize_architecture(row.get("architecture"))
-            model_name = str(row.get("model_name") or ("real" if label == 0 else "unknown"))
-            subset = str(row.get("subset") or "unknown")
-            real_source = effective_real_source(row)
-
-            if label == 1:
-                if architecture_counts[(split, architecture)] >= fake_targets[split][architecture]:
-                    skipped["architecture quota full"] += 1
-                    continue
-                model_cap = (
-                    config.data.systematic_per_model_cap
-                    if subset.casefold() == "systematic"
-                    else config.data.non_systematic_per_model_cap
-                )
-                if model_counts[(split, model_name)] >= model_cap:
-                    skipped["model quota full"] += 1
-                    continue
-            else:
-                source_cap = max(
-                    1,
-                    math.ceil(class_targets[(split, 0)] * config.data.max_real_source_fraction),
-                )
-                if real_source_counts[(split, real_source)] >= source_cap:
-                    skipped["real source quota full"] += 1
-                    continue
-
-            try:
-                image_bytes = extract_image_bytes(row.get("image_data"))
-            except PreparationError:
-                skipped["missing image bytes"] += 1
-                continue
-            content_id = hashlib.sha256(image_bytes).hexdigest()
-            if config.data.exact_deduplication and content_id in seen_sha256:
-                skipped["exact duplicate"] += 1
-                continue
-            try:
-                decoded = validate_and_describe_image(image_bytes, config)
-            except PreparationError:
-                skipped["decode failure"] += 1
-                continue
-            if (
-                config.data.perceptual_deduplication
-                and decoded.perceptual_hash in seen_perceptual_hashes
-            ):
-                skipped["perceptual duplicate"] += 1
-                continue
-            if selected_bytes + len(image_bytes) > config.data.max_download_gb * GIB:
-                stop_reason = "configured byte budget reached"
-                break
-
-            extension = _extension(row.get("format"), decoded.image_format)
-            relative_path = Path("images") / split / ("fake" if label else "real") / f"{content_id}.{extension}"
-            absolute_path = output_dir / relative_path
-            if not absolute_path.exists():
-                _atomic_write_bytes(absolute_path, image_bytes)
-
-            record = {
-                "id": content_id,
-                "image_name": str(row.get("image_name") or "unknown-image"),
-                "path": str(relative_path),
-                "label": label,
-                "split": split,
-                "model_name": model_name,
-                "architecture": architecture,
-                "subset": subset,
-                "real_source": real_source,
-                "format": extension,
-                "width": decoded.width,
-                "height": decoded.height,
-                "source_revision": revision,
-                "perceptual_hash": decoded.perceptual_hash,
-            }
-            records[content_id] = record
-            seen_sha256.add(content_id)
-            seen_perceptual_hashes.add(decoded.perceptual_hash)
-            selected_bytes += len(image_bytes)
-            class_counts[(split, label)] += 1
-            if label == 1:
-                architecture_counts[(split, architecture)] += 1
-                model_counts[(split, model_name)] += 1
-            else:
-                real_source_counts[(split, real_source)] += 1
-
-            if _quotas_complete(class_counts, architecture_counts, class_targets, fake_targets):
-                stop_reason = "all quotas satisfied"
-                break
-        else:
-            stop_reason = "source rows exhausted"
-    except BaseException as exc:
-        checkpoint(False, f"interrupted by {type(exc).__name__}")
-        raise
-
-    complete = _quotas_complete(class_counts, architecture_counts, class_targets, fake_targets)
-    audit = checkpoint(complete, stop_reason)
-    if not complete:
-        raise PreparationError(
-            f"Sampling stopped before all quotas were satisfied: {stop_reason}. "
-            f"Inspect {audit_path} and adjust only the centralized configuration."
-        )
-    return audit
-
-
-def _resolve_revision(config: AppConfig, token: str | bool | None) -> str:
-    if config.data.revision:
-        return config.data.revision
-    existing_audit = Path(config.data.audit_path)
-    if existing_audit.is_file():
-        try:
-            revision = json.loads(existing_audit.read_text(encoding="utf-8")).get("source_revision")
-            if revision:
-                return str(revision)
-        except (json.JSONDecodeError, OSError):
-            pass
-    from huggingface_hub import HfApi
-
-    return str(HfApi(token=token).dataset_info(config.data.repo_id).sha)
+def _normalize_split(value: object) -> str:
+    split = str(value).casefold()
+    if split == "validation":
+        return "val"
+    if split not in SPLITS:
+        raise PreparationError(f"Unsupported source split: {value}")
+    return split
 
 
 def _resolve_hf_token(config: AppConfig) -> str | bool | None:
-    """Resolve a saved Hugging Face credential without logging its value."""
-    if config.data.hf_auth == "disabled":
-        LOGGER.info("Hugging Face authentication is disabled by configuration.")
-        return False
     from huggingface_hub import get_token
 
+    if config.data.hf_auth == "disabled":
+        return False
     token = get_token()
     if token:
-        LOGGER.info("Using the saved Hugging Face credential for Hub requests.")
+        LOGGER.info("Using the saved Hugging Face credential for gated dataset requests.")
         return token
     if config.data.hf_auth == "required":
         raise PreparationError(
-            "Hugging Face authentication is required, but no saved token was found. "
-            "Run 'hf auth login' in the same user environment."
+            "This gated dataset requires a saved Hugging Face token. Accept the dataset "
+            "terms in a browser, then run 'hf auth login' in this user environment."
         )
-    LOGGER.warning(
-        "No saved Hugging Face credential was found; Hub requests will be unauthenticated."
-    )
+    LOGGER.warning("No saved Hugging Face token was found; requests are unauthenticated.")
     return None
 
 
-def _is_retryable_network_error(error: BaseException) -> bool:
-    """Recognize common Hub transport failures through wrapped exception chains."""
+def _is_retryable(error: BaseException) -> bool:
     current: BaseException | None = error
-    visited: set[int] = set()
-    network_modules = (
-        "aiohttp",
-        "fsspec",
-        "httpcore",
-        "httpx",
-        "huggingface_hub",
-        "requests",
-        "urllib3",
-    )
-    while current is not None and id(current) not in visited:
-        visited.add(id(current))
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
         if isinstance(current, (ConnectionError, TimeoutError, OSError)):
             return True
-        if type(current).__module__.startswith(network_modules):
+        if type(current).__module__.split(".", 1)[0] in {
+            "httpcore",
+            "httpx",
+            "huggingface_hub",
+            "requests",
+            "urllib3",
+        }:
             return True
         current = current.__cause__ or current.__context__
     return False
 
 
-def _shard_filename(index: int) -> str:
-    return f"data/HFCF_small_{index}.parquet"
-
-
-def _preflight_local_shards(
-    config: AppConfig, revision: str, token: str | bool | None
-) -> list[str]:
-    """Resolve selected shard sizes without downloading their payloads."""
-    from huggingface_hub import hf_hub_download
-
-    filenames = [_shard_filename(index) for index in config.data.shard_indices]
-    total_size = 0
-    for filename in filenames:
-        info = hf_hub_download(
-            repo_id=config.data.repo_id,
-            filename=filename,
-            repo_type="dataset",
-            revision=revision,
-            local_dir=config.data.shard_cache_dir,
-            token=token,
-            dry_run=True,
-        )
-        total_size += int(info.file_size)
-    total_gib = total_size / GIB
-    if total_gib > config.data.max_shard_cache_gb:
-        raise PreparationError(
-            f"Selected source shards require {total_gib:.2f} GiB, exceeding "
-            f"data.max_shard_cache_gb={config.data.max_shard_cache_gb:.2f}."
-        )
-    LOGGER.info(
-        "Selected %d original Parquet shards (%.2f GiB maximum local cache).",
-        len(filenames),
-        total_gib,
-    )
-    return filenames
-
-
-def _iter_local_shards(
-    config: AppConfig,
-    revision: str,
-    token: str | bool | None,
-    filenames: Iterable[str],
-) -> Iterable[Mapping[str, Any]]:
-    """Download resumable source files one at a time and iterate them offline."""
-    import pyarrow.parquet as parquet
-    from huggingface_hub import hf_hub_download
-
-    for position, filename in enumerate(filenames, start=1):
-        LOGGER.info(
-            "Ensuring source shard %d/%d is cached: %s",
-            position,
-            len(config.data.shard_indices),
-            filename,
-        )
-        local_path = hf_hub_download(
-            repo_id=config.data.repo_id,
-            filename=filename,
-            repo_type="dataset",
-            revision=revision,
-            local_dir=config.data.shard_cache_dir,
-            token=token,
-        )
-        LOGGER.info("Reading cached source shard: %s", local_path)
-        parquet_file = parquet.ParquetFile(local_path)
-        for batch in parquet_file.iter_batches(batch_size=32):
-            yield from batch.to_pylist()
-
-
-def prepare_dataset(config: AppConfig) -> dict[str, Any]:
-    """Download pinned source shards and run bounded stratified sampling."""
-    token = _resolve_hf_token(config)
+def _retry(config: AppConfig, operation: Any, description: str) -> Any:
     for attempt in range(config.data.network_max_retries + 1):
         try:
-            revision = _resolve_revision(config, token)
-            LOGGER.info("Using dataset revision %s", revision)
-            filenames = _preflight_local_shards(config, revision, token)
-            return sample_rows(
-                _iter_local_shards(config, revision, token, filenames),
-                config,
-                revision,
-            )
-        except PreparationError:
-            raise
+            return operation()
         except Exception as exc:
-            if not _is_retryable_network_error(exc) or attempt >= config.data.network_max_retries:
+            if not _is_retryable(exc) or attempt >= config.data.network_max_retries:
                 raise
-            delay = min(
-                60.0,
-                config.data.network_retry_base_seconds * (2**attempt),
-            )
+            delay = min(60.0, config.data.network_retry_base_seconds * (2**attempt))
             LOGGER.warning(
-                "Hub shard acquisition failed with %s. Retrying from the latest checkpoint in %.1f "
-                "seconds (%d/%d).",
+                "%s failed with %s; retrying in %.1f seconds (%d/%d).",
+                description,
                 type(exc).__name__,
                 delay,
                 attempt + 1,
                 config.data.network_max_retries,
             )
             time.sleep(delay)
-    raise AssertionError("The retry loop terminated unexpectedly.")
+    raise AssertionError("Retry loop terminated unexpectedly.")
+
+
+def _verify_access(config: AppConfig, token: str | bool | None) -> list[Any]:
+    from huggingface_hub import HfApi
+    from huggingface_hub.errors import HfHubHTTPError
+
+    try:
+        info = _retry(
+            config,
+            lambda: HfApi(token=token).dataset_info(
+                config.data.repo_id,
+                revision=config.data.revision,
+                files_metadata=True,
+            ),
+            "Dataset metadata request",
+        )
+    except HfHubHTTPError as exc:
+        status = getattr(exc.response, "status_code", None)
+        if status in {401, 403}:
+            raise PreparationError(
+                "Hugging Face denied access to the gated dataset. Accept its terms and run "
+                "'hf auth login' before retrying."
+            ) from exc
+        raise
+    if str(info.sha) != config.data.revision:
+        raise PreparationError(
+            f"Dataset revision resolved to {info.sha}, expected {config.data.revision}."
+        )
+    return list(info.siblings)
+
+
+def _download_file(
+    config: AppConfig, token: str | bool | None, filename: str, local_dir: str
+) -> Path:
+    from huggingface_hub import hf_hub_download
+
+    return Path(
+        _retry(
+            config,
+            lambda: hf_hub_download(
+                repo_id=config.data.repo_id,
+                filename=filename,
+                repo_type="dataset",
+                revision=config.data.revision,
+                token=token,
+                local_dir=local_dir,
+            ),
+            f"Download of {filename}",
+        )
+    )
+
+
+def _load_source_metadata(
+    config: AppConfig, token: str | bool | None
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    import pyarrow.parquet as parquet
+
+    metadata_dir = str(Path(config.data.shard_cache_dir) / "metadata")
+    manifest_path = _download_file(config, token, config.data.metadata_file, metadata_dir)
+    source_config_path = _download_file(
+        config, token, config.data.source_config_file, metadata_dir
+    )
+    rows = parquet.read_table(manifest_path).to_pylist()
+    source_config = json.loads(source_config_path.read_text(encoding="utf-8"))
+    if str(source_config.get("pipeline_version")) != config.data.expected_pipeline_version:
+        raise PreparationError("The source preprocessing pipeline version does not match config.")
+    if int(source_config.get("target_resolution", -1)) != config.data.expected_image_size:
+        raise PreparationError("The source target resolution does not match config.")
+    if set(source_config.get("generators", {})) != set(config.data.generators):
+        raise PreparationError("The source generator set does not match data.generators.")
+    return rows, source_config
+
+
+def select_paired_metadata(
+    rows: Iterable[Mapping[str, Any]], config: AppConfig
+) -> dict[str, dict[str, Any]]:
+    """Validate all seven-way parent groups and choose one balanced fake per parent."""
+    by_parent: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
+    for source_row in rows:
+        row = dict(source_row)
+        parent = str(row.get("source_real_id") or "")
+        generator = str(row.get("generator") or "")
+        if not parent or not generator or generator in by_parent[parent]:
+            raise PreparationError("Source metadata contains an invalid or duplicate pair row.")
+        row["split"] = _normalize_split(row.get("split"))
+        by_parent[parent][generator] = row
+    if len(by_parent) != config.data.expected_parent_count:
+        raise PreparationError(
+            f"Source metadata contains {len(by_parent)} parents, expected "
+            f"{config.data.expected_parent_count}."
+        )
+    expected_generators = {"real", *config.data.generators}
+    for parent, group in by_parent.items():
+        if set(group) != expected_generators:
+            raise PreparationError(f"Parent {parent} does not have one real and six fakes.")
+        if int(group["real"]["label"]) != 0 or any(
+            int(group[name]["label"]) != 1 for name in config.data.generators
+        ):
+            raise PreparationError(f"Parent {parent} has inconsistent labels.")
+        if str(group["real"]["image_id"]) != parent:
+            raise PreparationError(f"Parent {parent} has an invalid real image identity.")
+        if len({row["split"] for row in group.values()}) != 1:
+            raise PreparationError(f"Parent {parent} crosses source splits.")
+
+    selected: dict[str, dict[str, Any]] = {}
+    for split in SPLITS:
+        parents = sorted(
+            parent for parent, group in by_parent.items() if group["real"]["split"] == split
+        )
+        rng = random.Random(f"{config.project.seed}:{split}:generator-assignment")
+        rng.shuffle(parents)
+        assignments: list[str] = []
+        for start in range(0, len(parents), len(config.data.generators)):
+            generator_block = list(config.data.generators)
+            rng.shuffle(generator_block)
+            assignments.extend(generator_block[: len(parents) - start])
+        for parent, generator in zip(parents, assignments):
+            real = by_parent[parent]["real"]
+            fake = by_parent[parent][generator]
+            selected[str(real["image_id"])] = real
+            selected[str(fake["image_id"])] = fake
+    expected_selected = config.data.expected_parent_count * 2
+    if len(selected) != expected_selected:
+        raise PreparationError(
+            f"Paired selection produced {len(selected)} rows, expected {expected_selected}."
+        )
+    return selected
+
+
+def _source_shards(siblings: Iterable[Any], config: AppConfig) -> list[str]:
+    prefixes = [
+        f"{generator}/{split}/"
+        for generator in ("real", *config.data.generators)
+        for split in SPLITS
+    ]
+    files: list[tuple[str, int]] = []
+    for sibling in siblings:
+        name = str(sibling.rfilename)
+        if name.endswith(".parquet") and any(name.startswith(prefix) for prefix in prefixes):
+            files.append((name, int(sibling.size or 0)))
+    if not files:
+        raise PreparationError("No image Parquet shards were found at the pinned revision.")
+    total = sum(size for _, size in files)
+    if total > config.data.max_download_gb * GIB:
+        raise PreparationError(
+            f"Pinned image shards total {total / GIB:.2f} GiB, exceeding "
+            f"data.max_download_gb={config.data.max_download_gb:.2f}."
+        )
+    peak_prefetch = sum(
+        sorted((size for _, size in files), reverse=True)[: config.data.download_workers]
+    )
+    if peak_prefetch > config.data.max_shard_cache_gb * GIB:
+        raise PreparationError(
+            f"The largest prefetched shards may require {peak_prefetch / GIB:.2f} GiB, "
+            f"exceeding data.max_shard_cache_gb={config.data.max_shard_cache_gb:.2f}."
+        )
+    LOGGER.info("Preflight found %d image shards totaling %.2f GiB.", len(files), total / GIB)
+    return sorted(name for name, _ in files)
+
+
+def _config_fingerprint(config: AppConfig, selected_ids: Iterable[str]) -> str:
+    payload = {
+        "repo_id": config.data.repo_id,
+        "revision": config.data.revision,
+        "generators": config.data.generators,
+        "seed": config.project.seed,
+        "selected_ids_sha256": hashlib.sha256(
+            "\n".join(sorted(selected_ids)).encode()
+        ).hexdigest(),
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+
+def _image_bytes(value: Any) -> bytes:
+    if isinstance(value, Mapping):
+        value = value.get("bytes")
+    if isinstance(value, memoryview):
+        value = value.tobytes()
+    if isinstance(value, bytearray):
+        value = bytes(value)
+    if not isinstance(value, bytes):
+        raise PreparationError("A selected source row does not contain image bytes.")
+    return value
+
+
+def _describe_image(image_bytes: bytes, config: AppConfig) -> dict[str, Any]:
+    import imagehash
+
+    Image.MAX_IMAGE_PIXELS = config.data.max_image_pixels
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            with Image.open(io.BytesIO(image_bytes)) as source:
+                source.load()
+                image_format = str(source.format or "").casefold()
+                image = ImageOps.exif_transpose(source).convert("RGB")
+                width, height = image.size
+                return {
+                    "format": image_format,
+                    "width": width,
+                    "height": height,
+                    "perceptual_hash": str(
+                        imagehash.phash(image, hash_size=config.data.perceptual_hash_size)
+                    ),
+                    "difference_hash": str(
+                        imagehash.dhash(image, hash_size=config.data.perceptual_hash_size)
+                    ),
+                }
+    except (Image.DecompressionBombError, Image.DecompressionBombWarning) as exc:
+        raise PreparationError("A selected image exceeds the safe pixel limit.") from exc
+    except (UnidentifiedImageError, OSError, ValueError) as exc:
+        raise PreparationError("A selected image cannot be decoded safely.") from exc
+
+
+def _manifest_records(path: Path, root: Path) -> dict[str, dict[str, Any]]:
+    if not path.is_file():
+        return {}
+    records: dict[str, dict[str, Any]] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line:
+            continue
+        record = json.loads(line)
+        record_id = str(record["id"])
+        if record_id in records:
+            raise PreparationError(f"Existing manifest contains duplicate id {record_id}.")
+        if not (root / record["path"]).is_file():
+            raise PreparationError(f"Resume image is missing for {record_id}.")
+        records[record_id] = record
+    return records
+
+
+def _write_manifest(path: Path, records: Iterable[Mapping[str, Any]]) -> None:
+    split_order = {name: index for index, name in enumerate(SPLITS)}
+    ordered = sorted(
+        records,
+        key=lambda row: (split_order[str(row["split"])], int(row["label"]), str(row["id"])),
+    )
+    content = "".join(json.dumps(dict(record), sort_keys=True) + "\n" for record in ordered)
+    atomic_write_text(path, content)
+
+
+def _state_audit(
+    config: AppConfig,
+    fingerprint: str,
+    completed: set[str],
+    shards: list[str],
+    records: Mapping[str, Any],
+    complete: bool,
+    reason: str,
+    excluded_parents: Iterable[str] = (),
+) -> dict[str, Any]:
+    counts = Counter(f"{r['split']}:{r['label']}" for r in records.values())
+    generators = Counter(
+        f"{r['split']}:{r['generator']}" for r in records.values() if r["label"] == 1
+    )
+    return {
+        "complete": complete,
+        "source_mode": "pinned_resumable_parquet_shards",
+        "stop_reason": reason,
+        "source_revision": config.data.revision,
+        "sampling_config_sha256": fingerprint,
+        "processed_shards": len(completed),
+        "total_shards": len(shards),
+        "selected": len(records),
+        "class_counts": dict(sorted(counts.items())),
+        "fake_generator_counts": dict(sorted(generators.items())),
+        "excluded_parent_count": len(set(excluded_parents)),
+        "nuisance_report": config.data.nuisance_report_path,
+    }
+
+
+def _checkpoint(
+    config: AppConfig,
+    fingerprint: str,
+    completed: set[str],
+    shards: list[str],
+    expected_ids: set[str],
+    records: Mapping[str, dict[str, Any]],
+    complete: bool,
+    reason: str,
+    excluded_parents: Iterable[str] = (),
+) -> dict[str, Any]:
+    _write_manifest(Path(config.data.manifest_path), records.values())
+    state = {
+        "schema_version": 1,
+        "complete": complete,
+        "sampling_config_sha256": fingerprint,
+        "source_revision": config.data.revision,
+        "completed_shards": sorted(completed),
+        "expected_ids": sorted(expected_ids),
+        "extracted_ids": sorted(records),
+    }
+    atomic_write_text(Path(config.data.state_path), json.dumps(state, indent=2) + "\n")
+    audit = _state_audit(
+        config, fingerprint, completed, shards, records, complete, reason, excluded_parents
+    )
+    atomic_write_text(
+        Path(config.data.audit_path), json.dumps(audit, indent=2, sort_keys=True) + "\n"
+    )
+    return audit
+
+
+def _extract_selected_rows(
+    shard: Path,
+    selected: Mapping[str, Mapping[str, Any]],
+    config: AppConfig,
+    records: dict[str, dict[str, Any]],
+) -> None:
+    import pyarrow.parquet as parquet
+
+    root = Path(config.data.output_dir)
+    for batch in parquet.ParquetFile(shard).iter_batches(batch_size=32):
+        for row in batch.to_pylist():
+            image_id = str(row.get("image_id") or "")
+            expected = selected.get(image_id)
+            if expected is None or image_id in records:
+                continue
+            parent = str(row.get("source_real_id") or "")
+            generator = str(row.get("generator") or "")
+            label = int(row.get("label", -1))
+            split = _normalize_split(row.get("split"))
+            if (
+                parent != str(expected["source_real_id"])
+                or generator != str(expected["generator"])
+                or label != int(expected["label"])
+                or split != str(expected["split"])
+            ):
+                raise PreparationError(f"Source row metadata mismatch for {image_id}.")
+            if str(row.get("pipeline_version")) != config.data.expected_pipeline_version:
+                raise PreparationError(f"Unexpected pipeline version for {image_id}.")
+            image_bytes = _image_bytes(row.get("image"))
+            digest = hashlib.sha256(image_bytes).hexdigest()
+            if digest != str(row.get("sha256")) or digest != str(expected.get("sha256")):
+                raise PreparationError(f"SHA-256 mismatch for {image_id}.")
+            description = _describe_image(image_bytes, config)
+            if (
+                description["format"] != "png"
+                or description["width"] != config.data.expected_image_size
+                or description["height"] != config.data.expected_image_size
+                or int(row.get("width", -1)) != config.data.expected_image_size
+                or int(row.get("height", -1)) != config.data.expected_image_size
+            ):
+                raise PreparationError(f"Unexpected image encoding or dimensions for {image_id}.")
+            relative = Path("images") / split / ("fake" if label else "real") / f"{image_id}.png"
+            destination = root / relative
+            if not destination.is_file():
+                _atomic_write_bytes(destination, image_bytes)
+            records[image_id] = {
+                "id": image_id,
+                "path": str(relative),
+                "label": label,
+                "split": split,
+                "source_split": str(row.get("split")),
+                "source_real_id": parent,
+                "generator": generator,
+                "model_name": generator,
+                "source_dataset": str(row.get("source_dataset") or "unknown"),
+                "prompt": str(row.get("prompt") or ""),
+                "pipeline_version": str(row.get("pipeline_version")),
+                "format": "png",
+                "width": description["width"],
+                "height": description["height"],
+                "bytes": len(image_bytes),
+                "content_sha256": digest,
+                "perceptual_hash": description["perceptual_hash"],
+                "difference_hash": description["difference_hash"],
+                "source_revision": config.data.revision,
+            }
+
+
+def _hamming(left: str, right: str) -> int:
+    return (int(left, 16) ^ int(right, 16)).bit_count()
+
+
+def _official_hashes(config: AppConfig) -> list[tuple[str, str, Any]]:
+    import imagehash
+
+    manifest = Path(config.data.official_leakage_manifest)
+    root = Path(config.data.official_leakage_root)
+    if not manifest.is_file():
+        raise PreparationError(
+            "COCO val2017 leakage cannot be audited because the official WildFake manifest is "
+            "missing. Run aigc-prepare-official-eval first."
+        )
+    hashes: list[tuple[str, str, Any]] = []
+    for line in manifest.read_text(encoding="utf-8").splitlines():
+        record = json.loads(line)
+        if int(record["label"]) != 0:
+            continue
+        path = root / record["path"]
+        if not path.is_file():
+            raise PreparationError(f"Official leakage audit image is missing: {path}")
+        with Image.open(path) as source:
+            image = ImageOps.exif_transpose(source).convert("RGB")
+            hashes.append(
+                (
+                    str(imagehash.phash(image, hash_size=config.data.perceptual_hash_size)),
+                    str(imagehash.dhash(image, hash_size=config.data.perceptual_hash_size)),
+                    imagehash.crop_resistant_hash(image),
+                )
+            )
+    if not hashes:
+        raise PreparationError("The official leakage manifest contains no real images.")
+    return hashes
+
+
+def _excluded_parents(records: Mapping[str, Mapping[str, Any]], config: AppConfig) -> set[str]:
+    excluded: set[str] = set()
+    sha_parents: dict[str, str] = {}
+    phash_parents: dict[str, str] = {}
+    for record in records.values():
+        parent = str(record["source_real_id"])
+        digest = str(record["content_sha256"])
+        phash = str(record["perceptual_hash"])
+        if config.data.exact_deduplication and digest in sha_parents:
+            excluded.update((parent, sha_parents[digest]))
+        else:
+            sha_parents[digest] = parent
+        if config.data.perceptual_deduplication and phash in phash_parents:
+            excluded.update((parent, phash_parents[phash]))
+        else:
+            phash_parents[phash] = parent
+
+    official = _official_hashes(config)
+    coco_reals = [
+        record
+        for record in records.values()
+        if record["label"] == 0 and str(record["source_dataset"]).casefold() == "coco"
+    ]
+    for record in coco_reals:
+        candidate_phash = str(record["perceptual_hash"])
+        candidate_dhash = str(record["difference_hash"])
+        candidate_crop_hash: Any | None = None
+        for official_phash, official_dhash, official_crop_hash in official:
+            phash_distance = _hamming(candidate_phash, official_phash)
+            dhash_distance = _hamming(candidate_dhash, official_dhash)
+            strict_match = (
+                phash_distance <= config.data.leakage_phash_distance
+                and dhash_distance <= config.data.leakage_dhash_distance
+            )
+            crop_match = False
+            if not strict_match and phash_distance <= max(
+                32, config.data.leakage_phash_distance * 4
+            ):
+                if candidate_crop_hash is None:
+                    import imagehash
+
+                    candidate_path = Path(config.data.output_dir) / str(record["path"])
+                    with Image.open(candidate_path) as source:
+                        candidate_crop_hash = imagehash.crop_resistant_hash(
+                            ImageOps.exif_transpose(source).convert("RGB")
+                        )
+                crop_match = candidate_crop_hash.matches(
+                    official_crop_hash,
+                    hamming_cutoff=config.data.leakage_dhash_distance,
+                )
+            if strict_match or crop_match:
+                excluded.add(str(record["source_real_id"]))
+                break
+    return excluded
+
+
+def _safe_remove_cached_shard(path: Path, cache_root: Path) -> None:
+    try:
+        path.absolute().relative_to(cache_root.absolute())
+    except ValueError as exc:
+        raise PreparationError(f"Refusing to remove a shard outside project cache: {path}") from exc
+    path.unlink(missing_ok=True)
+
+
+def prepare_dataset(config: AppConfig) -> dict[str, Any]:
+    """Acquire the pinned paired subset, audit leakage, and run nuisance probing."""
+    token = _resolve_hf_token(config)
+    siblings = _verify_access(config, token)
+    metadata_rows, _source_config = _load_source_metadata(config, token)
+    selected = select_paired_metadata(metadata_rows, config)
+    expected_ids = set(selected)
+    shards = _source_shards(siblings, config)
+    fingerprint = _config_fingerprint(config, expected_ids)
+    output_root = Path(config.data.output_dir)
+    output_root.mkdir(parents=True, exist_ok=True)
+    manifest_path = Path(config.data.manifest_path)
+    state_path = Path(config.data.state_path)
+    records = _manifest_records(manifest_path, output_root)
+    completed: set[str] = set()
+    if state_path.is_file():
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        if state.get("sampling_config_sha256") != fingerprint:
+            raise PreparationError(
+                "Existing preparation state uses a different source selection. Move the old "
+                "output directory or restore the matching configuration before retrying."
+            )
+        completed = set(state.get("completed_shards", []))
+        if set(state.get("expected_ids", [])) != expected_ids:
+            raise PreparationError("Existing preparation state has a different expected ID set.")
+        if bool(state.get("complete")):
+            audit = json.loads(Path(config.data.audit_path).read_text(encoding="utf-8"))
+            if config.nuisance_audit.enabled and not Path(config.data.nuisance_report_path).is_file():
+                try:
+                    from aigc_recognizer.data.nuisance import run_nuisance_audit
+
+                    run_nuisance_audit(config)
+                except Exception:
+                    LOGGER.exception("Nuisance audit failed; prepared data remains usable.")
+            return audit
+    unknown_existing = set(records) - expected_ids
+    if unknown_existing:
+        raise PreparationError("Existing manifest contains records outside the selected ID set.")
+
+    pending = [name for name in shards if name not in completed]
+    cache_root = Path(config.data.shard_cache_dir) / "payload"
+    cache_root.mkdir(parents=True, exist_ok=True)
+
+    try:
+        with ThreadPoolExecutor(max_workers=config.data.download_workers) as executor:
+            futures: dict[str, Future[Path]] = {}
+            next_index = 0
+
+            def fill_queue() -> None:
+                nonlocal next_index
+                while next_index < len(pending) and len(futures) < config.data.download_workers:
+                    filename = pending[next_index]
+                    futures[filename] = executor.submit(
+                        _download_file, config, token, filename, str(cache_root)
+                    )
+                    next_index += 1
+
+            fill_queue()
+            processed_since_checkpoint = 0
+            for position, filename in enumerate(pending, start=1):
+                path = futures.pop(filename).result()
+                LOGGER.info("Processing source shard %d/%d: %s", position, len(pending), filename)
+                _extract_selected_rows(path, selected, config, records)
+                completed.add(filename)
+                _safe_remove_cached_shard(path, cache_root)
+                processed_since_checkpoint += 1
+                fill_queue()
+                if processed_since_checkpoint >= config.data.checkpoint_every_shards:
+                    _checkpoint(
+                        config,
+                        fingerprint,
+                        completed,
+                        shards,
+                        expected_ids,
+                        records,
+                        False,
+                        "periodic shard checkpoint",
+                    )
+                    processed_since_checkpoint = 0
+    except BaseException as exc:
+        _checkpoint(
+            config,
+            fingerprint,
+            completed,
+            shards,
+            expected_ids,
+            records,
+            False,
+            f"interrupted by {type(exc).__name__}",
+        )
+        raise
+
+    missing = expected_ids - set(records)
+    if missing:
+        _checkpoint(
+            config,
+            fingerprint,
+            completed,
+            shards,
+            expected_ids,
+            records,
+            False,
+            f"source exhausted with {len(missing)} selected IDs missing",
+        )
+        raise PreparationError(f"Source shards did not contain {len(missing)} selected image IDs.")
+
+    excluded = _excluded_parents(records, config)
+    safe_records = {
+        record_id: record
+        for record_id, record in records.items()
+        if str(record["source_real_id"]) not in excluded
+    }
+    pair_counts = Counter(str(record["source_real_id"]) for record in safe_records.values())
+    pair_labels: dict[str, set[int]] = defaultdict(set)
+    for record in safe_records.values():
+        pair_labels[str(record["source_real_id"])].add(int(record["label"]))
+    for parent, count in pair_counts.items():
+        if count != 2 or pair_labels[parent] != {0, 1}:
+            raise PreparationError(f"Final parent {parent} is not a complete real/fake pair.")
+    audit = _checkpoint(
+        config,
+        fingerprint,
+        completed,
+        shards,
+        expected_ids,
+        safe_records,
+        True,
+        "all selected shards processed and leakage audit completed",
+        excluded,
+    )
+    if config.nuisance_audit.enabled:
+        try:
+            from aigc_recognizer.data.nuisance import run_nuisance_audit
+
+            run_nuisance_audit(config)
+        except Exception:
+            LOGGER.exception("Nuisance audit failed; prepared data remains usable.")
+    return audit
 
 
 def main() -> None:
-    """Run the public dataset preparation command."""
+    """Run the public paired dataset preparation command."""
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    parser = config_argument_parser("Prepare a bounded Community Forensics subset.")
+    parser = config_argument_parser("Prepare the pinned paired AI image dataset subset.")
     args = parser.parse_args()
     config = load_config(args.config, args.set)
-    previous_signal_handlers: dict[signal.Signals, Any] = {}
+    previous_handlers: dict[signal.Signals, Any] = {}
 
-    def interrupt_with_checkpoint(signum: int, _frame: Any) -> None:
-        signal_name = signal.Signals(signum).name
-        raise PreparationError(f"Dataset preparation received {signal_name}.")
+    def interrupt(signum: int, _frame: Any) -> None:
+        raise PreparationError(f"Dataset preparation received {signal.Signals(signum).name}.")
 
     for signal_name in ("SIGHUP", "SIGTERM"):
         selected_signal = getattr(signal, signal_name, None)
         if selected_signal is not None:
-            previous_signal_handlers[selected_signal] = signal.getsignal(selected_signal)
-            signal.signal(selected_signal, interrupt_with_checkpoint)
+            previous_handlers[selected_signal] = signal.getsignal(selected_signal)
+            signal.signal(selected_signal, interrupt)
     try:
         audit = prepare_dataset(config)
     except PreparationError as exc:
         LOGGER.error("%s", exc)
         raise SystemExit(2) from exc
     finally:
-        for selected_signal, previous_handler in previous_signal_handlers.items():
-            signal.signal(selected_signal, previous_handler)
-    LOGGER.info(
-        "Dataset preparation completed with %d images after scanning %d rows.",
-        audit["selected"],
-        audit["scanned"],
-    )
+        for selected_signal, handler in previous_handlers.items():
+            signal.signal(selected_signal, handler)
+    LOGGER.info("Dataset preparation completed with %d safe images.", audit["selected"])
 
 
 if __name__ == "__main__":

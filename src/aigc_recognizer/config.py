@@ -23,45 +23,71 @@ class ProjectConfig:
 
 @dataclass
 class DataConfig:
-    repo_id: str = "OwensLab/CommunityForensics-Small"
-    revision: str | None = "6c539a534c07917307c381f5af4053c6091b5278"
-    shard_cache_dir: str = "data/cache/community_forensics_shards"
-    shard_indices: list[int] = field(
-        default_factory=lambda: [68, 70, 77, 78, 83, 115, 116, 156, 157]
+    repo_id: str = "Shanmuk4622/ai-image-detection-dataset"
+    revision: str = "8f1f536676f96cbc58bffd520ed50d1e7b9e894a"
+    metadata_file: str = "metadata/manifest.parquet"
+    source_config_file: str = "metadata/config.json"
+    shard_cache_dir: str = "data/cache/ai_image_detection_shards"
+    output_dir: str = "data/processed/ai_image_detection_20k"
+    manifest_path: str = "data/processed/ai_image_detection_20k/manifest.jsonl"
+    audit_path: str = "data/processed/ai_image_detection_20k/audit.json"
+    state_path: str = "data/processed/ai_image_detection_20k/preparation_state.json"
+    nuisance_report_path: str = "data/processed/ai_image_detection_20k/nuisance_report.json"
+    hf_auth: str = "required"
+    generators: list[str] = field(
+        default_factory=lambda: [
+            "sd15",
+            "sdxl",
+            "flux_schnell",
+            "kandinsky22",
+            "pixart_sigma",
+            "wuerstchen",
+        ]
     )
-    max_shard_cache_gb: float = 12.0
-    output_dir: str = "data/processed/community_forensics_20k"
-    manifest_path: str = "data/processed/community_forensics_20k/manifest.jsonl"
-    audit_path: str = "data/processed/community_forensics_20k/audit.json"
-    hf_auth: str = "auto"
-    max_scanned: int = 150_000
-    checkpoint_every_scanned: int = 1_000
+    expected_parent_count: int = 10_000
+    expected_pipeline_version: str = "1.2"
+    expected_image_size: int = 512
+    download_workers: int = 2
+    checkpoint_every_shards: int = 1
     network_max_retries: int = 5
     network_retry_base_seconds: float = 5.0
-    max_download_gb: float = 22.0
+    max_download_gb: float = 28.0
+    max_shard_cache_gb: float = 3.0
     max_image_pixels: int = 50_000_000
-    train_per_class: int = 8_000
-    val_per_class: int = 2_000
-    train_generator_percent: int = 80
-    architecture_ratios: dict[str, float] = field(
-        default_factory=lambda: {
-            "LatDiff": 0.60,
-            "GAN": 0.15,
-            "PixDiff": 0.10,
-            "other": 0.15,
-        }
-    )
-    systematic_per_model_cap: int = 6
-    non_systematic_per_model_cap: int = 2_000
-    max_real_source_fraction: float = 0.70
-    exclude_nsfw: bool = True
-    excluded_generator_tokens: list[str] = field(
-        default_factory=lambda: ["dall-e", "dalle", "openai"]
-    )
-    excluded_real_source_tokens: list[str] = field(default_factory=lambda: ["coco"])
     exact_deduplication: bool = True
     perceptual_deduplication: bool = True
-    perceptual_hash_size: int = 8
+    perceptual_hash_size: int = 16
+    official_leakage_manifest: str = "data/evaluation/wildfake_official/manifest.jsonl"
+    official_leakage_root: str = "data/evaluation/wildfake_official"
+    leakage_phash_distance: int = 8
+    leakage_dhash_distance: int = 8
+
+
+@dataclass
+class StandardizationConfig:
+    enabled: bool = True
+    application_probability: float = 0.75
+    resize_weight: float = 0.30
+    codec_weight: float = 0.30
+    resize_codec_weight: float = 0.40
+    resize_scale_min: float = 0.75
+    resize_scale_max: float = 1.0
+    jpeg_weight: float = 0.80
+    webp_weight: float = 0.20
+    quality_min: int = 85
+    quality_max: int = 100
+
+
+@dataclass
+class NuisanceAuditConfig:
+    enabled: bool = True
+    random_state: int = 2026
+    feature_size: int = 128
+    max_iter: int = 150
+    learning_rate: float = 0.08
+    max_leaf_nodes: int = 15
+    min_samples_leaf: int = 20
+    permutation_repeats: int = 5
 
 
 @dataclass
@@ -148,8 +174,6 @@ class OutputConfig:
 @dataclass
 class ProvenanceConfig:
     max_files: int = 10_000
-    # Prefer the Rust c2patool CLI when it is installed.  A null path uses PATH
-    # lookup, while an explicit path makes deployments deterministic.
     c2pa_tool_path: str | None = None
     c2pa_tool_timeout_seconds: float = 30.0
     c2pa_remote_manifest_fetch: bool = False
@@ -159,8 +183,6 @@ class ProvenanceConfig:
 
 @dataclass
 class WatermarkConfig:
-    """Settings for visible AI-watermark recognition."""
-
     enabled: bool = True
     ocr_enabled: bool = True
     tesseract_path: str | None = None
@@ -208,9 +230,60 @@ class PerspectiveConfig:
 
 
 @dataclass
+class OfficialEvaluationConfig:
+    repo_id: str = "hy2628982280/WildFake"
+    revision: str = "master"
+    output_dir: str = "data/evaluation/wildfake_official"
+    manifest_path: str = "data/evaluation/wildfake_official/manifest.jsonl"
+    audit_path: str = "data/evaluation/wildfake_official/audit.json"
+    metadata_dir: str = "data/cache/wildfake_official_metadata"
+    checkpoint_path: str = "artifacts/runs/clip_b16_multiview/best.pt"
+    results_path: str = "artifacts/evaluations/wildfake_official/results.json"
+    predictions_path: str = "artifacts/evaluations/wildfake_official/predictions.jsonl"
+    dalle_metadata_file: str = "label_csv_files/dalle3.csv"
+    coco_metadata_file: str = "label_csv_files/real_coco.csv"
+    dalle_archive_file: str = "Images/Diffusion_based/DALLE.zip"
+    coco_archive_file: str = "Images/Real/coco.zip"
+    dalle_archive_sha256: str = "5e4ebc56daa06ebeec99711b9cc204571558d3e17366f2df992a8cfd4f251d4c"
+    coco_archive_sha256: str = "0b4dda0968e5f0d3cb60434c24204fcdac1cc0b40018093f15307edd545905b3"
+    expected_real_count: int = 4_998
+    expected_fake_count: int = 8_843
+    max_download_gb: float = 4.0
+    checkpoint_every: int = 100
+    request_timeout_seconds: float = 60.0
+    network_max_retries: int = 5
+    network_retry_backoff: float = 1.0
+    batch_size: int = 32
+    num_workers: int = 8
+    prefetch_factor: int = 2
+    save_predictions: bool = True
+    scenarios: list[str] = field(
+        default_factory=lambda: [
+            "clean",
+            "jpeg_90",
+            "jpeg_70",
+            "jpeg_50",
+            "jpeg_30",
+            "blur_0.5",
+            "blur_1.0",
+            "blur_2.0",
+            "resize_0.5",
+            "resize_0.25",
+            "noise_0.02",
+            "noise_0.05",
+            "noise_0.10",
+            "color_jitter_0.20",
+            "center_crop_0.80",
+        ]
+    )
+
+
+@dataclass
 class AppConfig:
     project: ProjectConfig = field(default_factory=ProjectConfig)
     data: DataConfig = field(default_factory=DataConfig)
+    standardization: StandardizationConfig = field(default_factory=StandardizationConfig)
+    nuisance_audit: NuisanceAuditConfig = field(default_factory=NuisanceAuditConfig)
     views: ViewsConfig = field(default_factory=ViewsConfig)
     augmentations: AugmentationsConfig = field(default_factory=AugmentationsConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
@@ -220,52 +293,42 @@ class AppConfig:
     provenance: ProvenanceConfig = field(default_factory=ProvenanceConfig)
     watermark: WatermarkConfig = field(default_factory=WatermarkConfig)
     perspective: PerspectiveConfig = field(default_factory=PerspectiveConfig)
+    official_evaluation: OfficialEvaluationConfig = field(
+        default_factory=OfficialEvaluationConfig
+    )
 
     def validate(self) -> None:
         """Validate cross-field constraints before any expensive work starts."""
-        if self.data.repo_id != "OwensLab/CommunityForensics-Small":
-            raise ConfigError("Only OwensLab/CommunityForensics-Small is supported in v1.")
+        if self.data.repo_id != "Shanmuk4622/ai-image-detection-dataset":
+            raise ConfigError("Only Shanmuk4622/ai-image-detection-dataset is supported.")
         if self.model.backbone_name != "ViT-B-16":
             raise ConfigError("Only the ViT-B-16 backbone is supported in v1.")
         if self.model.pretrained != "openai":
             raise ConfigError("Only the OpenAI pretrained weights are supported in v1.")
         if self.model.embedding_dim != 512:
             raise ConfigError("ViT-B-16 requires model.embedding_dim=512.")
-        if (
-            self.model.residual_channels <= 0
-            or self.model.residual_embedding_dim <= 0
-            or self.model.residual_head_dim <= 0
-        ):
-            raise ConfigError("Residual branch dimensions must be positive.")
         if self.views.input_size != 224:
             raise ConfigError("ViT-B-16 currently requires views.input_size=224.")
         if not 0 < self.views.local_scale_min <= self.views.local_scale_max <= 1:
             raise ConfigError("Local view scales must satisfy 0 < min <= max <= 1.")
-        if not 0 < self.data.train_generator_percent < 100:
-            raise ConfigError("data.train_generator_percent must be between 1 and 99.")
-        if self.data.train_per_class <= 0 or self.data.val_per_class <= 0:
-            raise ConfigError("Per-class sample targets must be positive.")
-        if self.data.max_scanned <= 0 or self.data.checkpoint_every_scanned <= 0:
-            raise ConfigError("Scan and checkpoint limits must be positive.")
+        if not self.data.revision:
+            raise ConfigError("data.revision must pin a dataset commit.")
+        if len(self.data.generators) != 6 or len(set(self.data.generators)) != 6:
+            raise ConfigError("data.generators must contain six unique generator names.")
+        if self.data.expected_parent_count <= 0 or self.data.expected_image_size <= 0:
+            raise ConfigError("Expected dataset counts and dimensions must be positive.")
+        if self.data.download_workers <= 0 or self.data.checkpoint_every_shards <= 0:
+            raise ConfigError("Download workers and shard checkpoint interval must be positive.")
         if self.data.network_max_retries < 0 or self.data.network_retry_base_seconds <= 0:
             raise ConfigError("Network retry settings must be non-negative and positive.")
         if self.data.hf_auth not in {"auto", "required", "disabled"}:
             raise ConfigError("data.hf_auth must be auto, required, or disabled.")
         if self.data.max_download_gb <= 0:
             raise ConfigError("data.max_download_gb must be positive.")
-        if not self.data.shard_indices or any(index < 0 for index in self.data.shard_indices):
-            raise ConfigError("data.shard_indices must contain non-negative shard indices.")
-        if len(set(self.data.shard_indices)) != len(self.data.shard_indices):
-            raise ConfigError("data.shard_indices must not contain duplicates.")
         if self.data.max_shard_cache_gb <= 0:
             raise ConfigError("data.max_shard_cache_gb must be positive.")
-        if self.data.systematic_per_model_cap <= 0 or self.data.non_systematic_per_model_cap <= 0:
-            raise ConfigError("Generator sample caps must be positive.")
-        ratios = self.data.architecture_ratios
-        if set(ratios) != {"LatDiff", "GAN", "PixDiff", "other"}:
-            raise ConfigError("Architecture ratios must define LatDiff, GAN, PixDiff, and other.")
-        if any(value < 0 for value in ratios.values()) or abs(sum(ratios.values()) - 1.0) > 1e-6:
-            raise ConfigError("Architecture ratios must be non-negative and sum to 1.")
+        if self.data.leakage_phash_distance < 0 or self.data.leakage_dhash_distance < 0:
+            raise ConfigError("Leakage hash distances must be non-negative.")
         probabilities = [
             self.augmentations.transformed_clean_probability,
             self.augmentations.single_operation_probability,
@@ -274,30 +337,55 @@ class AppConfig:
         if any(value < 0 for value in probabilities) or abs(sum(probabilities) - 1.0) > 1e-6:
             raise ConfigError("Augmentation operation-count probabilities must sum to 1.")
         bounded_probabilities = [
-            self.data.max_real_source_fraction,
+            self.standardization.application_probability,
             self.model.dropout,
             self.training.warmup_fraction,
             self.training.threshold,
         ]
         if any(not 0 <= value <= 1 for value in bounded_probabilities):
             raise ConfigError("Probability and fraction fields must be in [0, 1].")
+        standardization_weights = [
+            self.standardization.resize_weight,
+            self.standardization.codec_weight,
+            self.standardization.resize_codec_weight,
+        ]
+        if any(value < 0 for value in standardization_weights) or abs(sum(standardization_weights) - 1.0) > 1e-6:
+            raise ConfigError("Standardization operation weights must sum to 1.")
+        codec_weights = [self.standardization.jpeg_weight, self.standardization.webp_weight]
+        if any(value < 0 for value in codec_weights) or abs(sum(codec_weights) - 1.0) > 1e-6:
+            raise ConfigError("Standardization codec weights must sum to 1.")
+        if not 0 < self.standardization.resize_scale_min <= self.standardization.resize_scale_max <= 1:
+            raise ConfigError("Standardization resize scales must satisfy 0 < min <= max <= 1.")
+        if not 1 <= self.standardization.quality_min <= self.standardization.quality_max <= 100:
+            raise ConfigError("Standardization codec quality must be in [1, 100].")
+        if (
+            self.nuisance_audit.feature_size <= 0
+            or self.nuisance_audit.max_iter <= 0
+            or self.nuisance_audit.max_leaf_nodes < 2
+            or self.nuisance_audit.min_samples_leaf <= 0
+        ):
+            raise ConfigError("Nuisance classifier limits are invalid.")
+        if self.nuisance_audit.learning_rate <= 0 or self.nuisance_audit.permutation_repeats <= 0:
+            raise ConfigError("Nuisance classifier settings must be positive.")
         if self.training.batch_size <= 0 or self.training.gradient_accumulation_steps <= 0:
             raise ConfigError("Batch size and gradient accumulation must be positive.")
         if self.training.num_workers < 0 or self.training.prefetch_factor <= 0:
             raise ConfigError("Worker count must be non-negative and prefetch factor positive.")
         if self.training.amp_dtype not in {"fp16", "bf16"}:
             raise ConfigError("training.amp_dtype must be fp16 or bf16.")
-        if self.provenance.max_files <= 0:
-            raise ConfigError("provenance.max_files must be positive.")
-        if self.provenance.c2pa_tool_timeout_seconds <= 0:
-            raise ConfigError("provenance.c2pa_tool_timeout_seconds must be positive.")
+        if (
+            self.model.residual_channels <= 0
+            or self.model.residual_embedding_dim <= 0
+            or self.model.residual_head_dim <= 0
+        ):
+            raise ConfigError("Residual branch dimensions must be positive.")
+        if self.provenance.max_files <= 0 or self.provenance.c2pa_tool_timeout_seconds <= 0:
+            raise ConfigError("Provenance limits must be positive.")
         watermark = self.watermark
         if watermark.ocr_timeout_seconds <= 0 or watermark.max_dimension <= 0:
             raise ConfigError("Watermark OCR timeout and max dimension must be positive.")
-        if not 0 < watermark.corner_fraction <= 1:
-            raise ConfigError("watermark.corner_fraction must be in (0, 1].")
-        if watermark.upscale_factor <= 0:
-            raise ConfigError("watermark.upscale_factor must be positive.")
+        if not 0 < watermark.corner_fraction <= 1 or watermark.upscale_factor <= 0:
+            raise ConfigError("Watermark corner fraction and upscale factor are invalid.")
         perspective = self.perspective
         if perspective.max_dimension <= 0 or perspective.hough_threshold <= 0:
             raise ConfigError("Perspective image dimension and Hough threshold must be positive.")
@@ -343,6 +431,44 @@ class AppConfig:
             raise ConfigError("perspective.fisheye_score_threshold must be in (0, 1].")
         if not 0 < perspective.fisheye_curvature_threshold < 1:
             raise ConfigError("perspective.fisheye_curvature_threshold must be in (0, 1).")
+        official = self.official_evaluation
+        if official.repo_id != "hy2628982280/WildFake":
+            raise ConfigError("Only hy2628982280/WildFake is supported for official evaluation.")
+        if official.expected_real_count <= 0 or official.expected_fake_count <= 0:
+            raise ConfigError("Official evaluation class counts must be positive.")
+        if official.max_download_gb <= 0 or official.checkpoint_every <= 0:
+            raise ConfigError("Official evaluation limits must be positive.")
+        if official.request_timeout_seconds <= 0 or official.network_max_retries < 0:
+            raise ConfigError("Official evaluation network settings are invalid.")
+        if official.network_retry_backoff <= 0:
+            raise ConfigError("Official evaluation retry backoff must be positive.")
+        if official.batch_size <= 0 or official.num_workers < 0:
+            raise ConfigError("Official evaluation loader settings are invalid.")
+        if official.prefetch_factor <= 0:
+            raise ConfigError("Official evaluation prefetch factor must be positive.")
+        supported_scenarios = {
+            "clean",
+            "jpeg_90",
+            "jpeg_70",
+            "jpeg_50",
+            "jpeg_30",
+            "blur_0.5",
+            "blur_1.0",
+            "blur_2.0",
+            "resize_0.5",
+            "resize_0.25",
+            "noise_0.02",
+            "noise_0.05",
+            "noise_0.10",
+            "color_jitter_0.20",
+            "center_crop_0.80",
+        }
+        if not official.scenarios or not set(official.scenarios) <= supported_scenarios:
+            raise ConfigError("Official evaluation contains an unsupported scenario.")
+        if "clean" not in official.scenarios:
+            raise ConfigError("Official evaluation scenarios must include clean.")
+        if len(set(official.scenarios)) != len(official.scenarios):
+            raise ConfigError("Official evaluation scenarios must not contain duplicates.")
 
     def to_dict(self) -> dict[str, Any]:
         """Return a serialization-safe representation."""
@@ -352,6 +478,8 @@ class AppConfig:
 _SECTIONS: dict[str, type[Any]] = {
     "project": ProjectConfig,
     "data": DataConfig,
+    "standardization": StandardizationConfig,
+    "nuisance_audit": NuisanceAuditConfig,
     "views": ViewsConfig,
     "augmentations": AugmentationsConfig,
     "model": ModelConfig,
@@ -361,6 +489,7 @@ _SECTIONS: dict[str, type[Any]] = {
     "provenance": ProvenanceConfig,
     "watermark": WatermarkConfig,
     "perspective": PerspectiveConfig,
+    "official_evaluation": OfficialEvaluationConfig,
 }
 
 

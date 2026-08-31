@@ -41,55 +41,44 @@ L = 1.0 * mean(BCE_clean, BCE_transformed)
 
 ### 3.1 来源和许可
 
-当前只使用 `OwensLab/CommunityForensics-Small`。该数据集包含约 278k 生成图和 278k 真实图，许可为 CC BY-NC-SA 4.0，仅适用于非商业研究；项目展示和发布时必须保留正确署名，并再次核对比赛使用场景和具体生成器许可。
+当前使用 gated 数据集 `Shanmuk4622/ai-image-detection-dataset`，固定 revision 为 `8f1f536676f96cbc58bffd520ed50d1e7b9e894a`。数据集将 5,000 张 COCO 与 5,000 张 ImageNet 真实图统一处理为 512×512 RGB PNG，并为每张真实图使用同一 BLIP-2 caption 生成六张伙伴图。数据集继承 ImageNet 的非商业研究限制以及各生成器许可；使用者必须在 Hugging Face 页面接受条款并执行 `hf auth login`。
 
-默认不再调用仓库级 `load_dataset(..., streaming=True)`。该数据集在 Hugging Face Dataset Viewer 中只有 4 个 `partial` 自动转换分片，实测这些分片只覆盖 LatDiff，无法满足 GAN、PixDiff 和 other 配额。默认 `local_shards` 模式直接访问固定 revision 下的原始 Parquet 文件，避免 Dataset Viewer 的不完整转换层。
-
-默认选择原始 shard `68/70/77/78/83`（多类 fake）和 `115/116/156/157`（VISION/LandscapesHQ real），远端总大小约 9.86GiB。选择依据来自原始 Parquet 的 metadata-only 扫描；这些 shard 在过滤 COCO 后仍能覆盖默认四类架构和 train/val 配额。`hf_hub_download` 将每个文件完整缓存后再由 PyArrow 离线读取，下载中断会保留 Hub 临时状态，重跑会继续未完成文件。下载逐 shard 进行，不会触发约 241.9GiB 的 186 个原始 shard 全量下载。
-
-`data.hf_auth` 默认为 `auto`：程序显式读取当前用户由 `hf auth login` 保存的 token，并把它传给 revision 查询和 shard 下载，但不会在日志或配置中打印或保存 token。若运行环境必须鉴权，可设为 `required`，此时找不到 token 会立即失败；公开匿名访问场景可设为 `disabled`。
+准备程序显式读取当前用户 token，并用于 revision 查询、metadata 和所有图片分片请求。token 不会出现在日志、配置或项目产物中。缺少权限、revision 漂移或 schema 不匹配都会在下载大文件前失败。
 
 ### 3.2 默认规模与抽样
 
-默认总计 20k 基础图片：
+先验证每个 `source_real_id` 恰好包含一张 real 和六张 fake，且整组属于同一官方 split。然后在每个 split 内固定 seed 打乱父 ID，按随机化的六生成器轮转选择一张 fake，因此生成器计数最多相差一张：
 
 | split | real | fake |
 |---|---:|---:|
-| train | 8,000 | 8,000 |
-| val | 2,000 | 2,000 |
+| train | 7,056 | 7,056 |
+| val | 1,446 | 1,446 |
+| test | 1,498 | 1,498 |
 
-fake 的默认架构目标为 LatDiff 60%、GAN 15%、PixDiff 10%、other 15%。Systematic 子集每个 `model_name` 最多取 6 张。原数据的 Manual 架构只有少量生成器（other 甚至只有一个），因此 Manual/Commercial 上限提高为 2,000，并按 `model_name + image_name` 做稳定图像级划分；否则 train/val 四架构配额在数学上不可满足。Systematic 仍按生成器名称划分并保持生成器级不相交。
+test 保留在 manifest 中，但 `aigc-train` 只读取 train/val。每张入选图都校验 PNG 编码、512×512 尺寸、pipeline version、上游 SHA-256 和安全解码。精确重复或相同高位 pHash 会按父组整体排除。
 
-默认过滤：
-
-- `nsfw_flag=true`。
-- DALL-E、Dalle、OpenAI 生成器，防止污染题目 DALL·E Advanced 验证域。
-- 真实图的来源实际位于 `model_name`，而 `real_source` 为 `N/A`；程序统一解析有效来源并排除 COCO，保守规避 COCO val2017 泄漏。
-- 非二分类标签、损坏图、解压炸弹、精确重复和感知哈希重复。
-
-原始图像编码保持不变，manifest 只引用安全验证后的本地副本。图片不会预先缩放到 224×224。
+由于真实来源含 COCO，而题目禁止训练 COCO val2017，训练准备依赖已经隔离准备好的 WildFake 官方真实子集。程序使用 256-bit pHash 与 dHash 组合比较 COCO real，确认匹配后同时排除 real 与其 fake 伙伴。官方 manifest 或图片缺失时拒绝完成训练数据准备，不以未经审计的数据继续。
 
 ### 3.3 空间保护与失败语义
 
-默认已选 shard 缓存上限为 12GiB、最终图片字节预算为 22GiB、最大扫描 150k 行。开始下载前会用 Hub dry-run 元数据核对 shard 总大小。满足全部类别和架构配额后立即停止；达到扫描或字节上限但配额不足时：
+远端图片分片约 24.5GB，最终 20k 图片通常约 7GB。程序先下载约 3MB metadata，确定完整的 20k 目标 ID，再扫描图片分片。默认同时预取两个完整分片，并用 `max_download_gb` 与 `max_shard_cache_gb` 在下载前检查预算。
 
-1. 原子写出当前 `manifest.jsonl` 和 `audit.json`。
-2. 命令以退出码 2 失败。
-3. 不会用偏斜的部分数据静默开始训练。
+`preparation_state.json`、manifest 和 audit 均原子写入，状态包含 revision、配置指纹、完整目标 ID、已处理 shard 和已提取 ID。常见网络错误指数退避。重跑从首个未完成 shard 继续，不依赖可能因重试改变的全局行号。已处理 shard 只从项目专用 payload cache 删除，不触碰用户全局 HF cache。异常和常规终止信号都会保存最近状态；训练入口只接受 `complete: true` 的 audit。
 
-此外每扫描 `checkpoint_every_scanned` 行会原子更新 manifest 和审计。收到常规异常、SIGTERM、SIGHUP 或 Ctrl-C 时也会立即保存。`local_shards` 下，完整 shard 已经在本地，恢复时重放少量行也不再消耗网络；若中断发生在 shard 下载中，Hub 下载缓存负责续传。常见 Hub 连接错误会采用指数退避自动重试。
+### 3.4 标签无关标准化与偏置探针
 
-如果中断时只留下 `images/` 而没有 manifest/audit，则无法可靠反推出生成器元数据；直接重跑即可，已有相同文件不会重复写入，但不在最终 manifest 中的孤立文件不会参与训练。
+在线预处理在 EXIF/RGB 规范化之后、global/local 几何和题目增强之前，以 0.75 概率执行温和标准化：resize round-trip、JPEG/WebP 重编码或两者组合。该函数不接收 label 或来源字段；clean/transformed 使用同一标准化基础图。train 随机采样，val/test/官方评估按 record ID 固定。
 
-若 15–25GB 存储仍不足，可在配置中同时把 `train_per_class` 从 8000 降到 6000，其他代码无需修改。
+数据准备完成后，nuisance classifier 从颜色统计、亮度直方图、熵、饱和度、边缘、Laplacian sharpness、8×8 blockiness 和径向频谱能量中预测真假标签。它在 train 拟合 `HistGradientBoostingClassifier`，在 val/test 输出 AUROC、AP、balanced accuracy、F1、混淆矩阵、每生成器结果和 permutation importance；原始规范图与确定性标准化图分别报告。来源、生成器、路径、prompt 和原始尺寸不会成为分类器输入。该报告只做诊断，不阻断训练；高频可分性也可能是真实生成器指纹。
 
 ## 4. 集中配置
 
 所有调试参数均在 `configs/default.yaml`：
 
 - `project`：seed 和 run name。
-- `data`：固定 revision、原始 shard 列表/缓存上限、路径、配额、过滤和去重。
-- `data` 中的运行参数：HF 鉴权策略、manifest 检查点间隔和网络重试退避。
+- `data`：固定 revision、生成器、配对规模、缓存/网络边界、路径、去重和官方泄漏审计。
+- `standardization`：标签无关 resize/codec 概率、范围和权重。
+- `nuisance_audit`：低层探针的特征尺寸与分类器参数。
 - `views`：输入尺寸、local crop 比例、padding 和插值。
 - `augmentations`：题目变换范围、操作数量概率和额外编码增强。
 - `model`：backbone 身份、embedding/head/projection 维度和 dropout。
@@ -104,11 +93,13 @@ CLI 只额外支持 `--set section.key=value`。未知 section、未知 key、�
 
 ```bash
 uv sync --extra dev
+uv run aigc-prepare-official-eval --config configs/default.yaml
+hf auth login
 uv run aigc-prepare --config configs/default.yaml
 uv run aigc-train --config configs/default.yaml
 ```
 
-当前默认训练使用 micro-batch 32、梯度累积 1 和 16 个 DataLoader worker，有效 batch size 为 32。clean/transformed 张量会合并成一次较大的 CLIP 前向，以减少小 kernel 和两次串行调用造成的 GPU 空隙。由于视觉主干冻结且前向位于 `no_grad` 中，显存占用本来就会显著低于端到端微调；判断性能时应同时观察每秒样本数和 GPU compute utilization，而不是以占满显存为目标。内存受限时应优先降低 `training.num_workers` 和 `training.batch_size`。
+当前默认训练使用 micro-batch 32、梯度累积 1 和 8 个 DataLoader worker，有效 batch size 为 32。clean/transformed 张量会合并成一次较大的 CLIP 前向，以减少小 kernel 和两次串行调用造成的 GPU 空隙。由于视觉主干冻结且前向位于 `no_grad` 中，显存占用本来就会显著低于端到端微调；判断性能时应同时观察每秒样本数和 GPU compute utilization，而不是以占满显存为目标。内存受限时应优先降低 `training.num_workers` 和 `training.batch_size`。
 
 DataLoader worker 默认不跨 epoch 常驻，以限制 PIL/编码库长期运行时的内存高水位。训练入口将 `SIGTERM` 和 `SIGHUP` 转换成可清理的中断，并在所有退出路径显式关闭 worker；Linux worker 还设置父进程死亡信号，以应对终端或 IDE 只强制终止主进程的情况。如确认运行环境稳定，可设置 `training.persistent_workers=true` 减少每轮 worker 启动开销。
 
@@ -135,6 +126,17 @@ checkpoint 包含检测头、optimizer、scheduler、AMP scaler、epoch、global
 
 每轮在固定 seed 的验证增强上分别计算 clean/transformed 的 AUROC、Average Precision、Balanced Accuracy 和 F1，并以 clean/transformed AUROC 均值作为最佳模型指标。
 
+训练完成后可使用题目指定的 WildFake 展示子集做独立测试。该子集严格由元数据定义为 4,998 张 COCO val2017 真实图与 8,843 张 DALL·E Advanced 生成图，存放在 `data/evaluation/`，不会写入或复用训练 manifest：
+
+```bash
+uv run aigc-prepare-official-eval --config configs/default.yaml
+uv run aigc-evaluate-official --config configs/default.yaml
+```
+
+WildFake 仓库整体约 1.2TB，而 DALL·E ZIP 约 25.6GB。准备命令校验上游 archive SHA-256，并通过 ZIP HTTP Range 只提取题目指定成员，实际选择图片约 2.93GB；下载中断后根据原子 manifest 继续。若上游 archive 身份或官方元数据数量不再是 real 4,998/fake 8,843，命令会拒绝评测。
+
+评测矩阵包括 clean、JPEG quality 90/70/50/30、Gaussian blur sigma 0.5/1.0/2.0、resize 0.5/0.25、Gaussian noise sigma 0.02/0.05/0.10、color jitter ±20% 和 center crop 80%。每个场景输出 AUROC、AP、balanced accuracy、F1、真假类别 recall 与混淆计数，同时保留逐图片置信度，便于完成鲁棒性表格和错误分析。
+
 `metrics.jsonl` 的每条记录包含 schema version、UTC timestamp、session ID、epoch 和 global step，允许恢复训练后继续形成明确的时间序列。
 
 `aigc-provenance` 会在四角区域尝试识别豆包/Seedream、即梦、通义万相、腾讯混元及主流海外生成器的中英文水印；结果写入每条记录的 `watermark`，并在没有更高等级 C2PA 证据时以中等置信度参与 `authenticity_summary`。OCR 依赖外部 Tesseract，缺少该程序时只报告降级状态，不会使 provenance 检查失败。也可使用 `aigc-watermark` 只输出水印报告。可见水印不是签名，可能被裁剪、复制或后加，漏检也不能证明图片真实。
@@ -143,8 +145,8 @@ checkpoint 包含检测头、optimizer、scheduler、AMP scaler、epoch、global
 
 - 数据 revision、抽样 seed、生成器划分、验证增强 seed 都会固定。
 - 在线训练增强会随 epoch 变化；checkpoint 保存完整 RNG 状态用于恢复。
-- CommunityForensics 中 Stable Diffusion 衍生模型占比较高，即使按生成器限额抽样也不能等价于真正独立的生成架构。
-- 感知哈希去重目前排除完全相同的 pHash，不进行昂贵的全局近邻检索。
-- Systematic 验证集衡量未见 `model_name`；Manual/Commercial 因架构生成器数量过少采用图像级划分，不能作为未见生成器指标。
+- 当前六种 fake 均为 text-to-image，不覆盖图生图、局部编辑或题目官方 DALL·E 域。
+- nuisance classifier 只能证明低层统计可分，不能自动判断信号是采集偏置还是有意义的生成器指纹。
+- COCO val2017 泄漏审计依赖感知哈希，对极端裁剪或重绘版本不能提供密码学意义的无重叠证明。
 - 被动检测器不能作为真实性证明，实际应用必须表达不确定性并控制真实图片误报。
-- 后续版本应加入 WildFake/SID_Set 外部验证、完整变换严重度矩阵、阈值校准和最终提交推理接口。
+- 后续版本应加入 SID_Set 等第二外部域、阈值校准和最终提交推理接口。

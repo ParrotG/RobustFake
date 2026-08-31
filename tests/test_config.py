@@ -27,3 +27,8 @@ def test_invalid_probability_sum_is_rejected() -> None:
             DEFAULT_CONFIG,
             ["augmentations.transformed_clean_probability=0.4"],
         )
+
+
+def test_unknown_official_evaluation_scenario_is_rejected() -> None:
+    with pytest.raises(ConfigError, match="unsupported scenario"):
+        load_config(DEFAULT_CONFIG, ["official_evaluation.scenarios=[clean, unknown]"])

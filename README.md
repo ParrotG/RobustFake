@@ -2,7 +2,7 @@
 
 A lightweight training pipeline for detecting AI-generated images under realistic redistribution artifacts. The detector uses a frozen OpenAI CLIP ViT-B/16 visual encoder and trains only a small, view-order-invariant classification head. Paired clean and degraded views improve robustness to compression, blur, resizing, noise, color changes, and cropping.
 
-The current release implements dataset preparation, model training, validation, checkpointing, resume support, and a provenance-report CLI for C2PA and EXIF. It does not yet include learned-model directory-to-JSON inference required for a competition submission.
+The current release implements dataset preparation, model training, validation, checkpointing, and resume support. It does not yet include the final directory-to-JSON inference tool required for a competition submission.
 
 For the full design rationale and data policy, see [docs/PROJECT.md](docs/PROJECT.md). The original challenge specification is available in [docs/QUESTION.MD](docs/QUESTION.MD).
 
@@ -31,58 +31,37 @@ Mean/std aggregation is invariant to view order. The mean captures evidence shar
 LayerNorm → Linear(1024, 256) → GELU → Dropout
 ```
 
-The resulting feature feeds a binary classifier and a training-only contrastive projection head. With the default dimensions, approximately 0.48M parameters are trainable with the residual branch enabled, or 0.36M for the CLIP-only baseline. The implementation also enforces total parameters below 2B and trainable parameters below 5M at runtime.
-
-The detector also includes an optional lightweight high-frequency residual branch. The input is first converted from CLIP-normalized values back to RGB in `[0, 1]`. Three fixed depthwise filters per color channel then extract Laplacian, horizontal-edge, and vertical-edge residuals. A small trainable CNN encodes these nine residual maps, and its multi-view mean/std representation is fused with the CLIP representation before classification. The filters are fixed; only the residual CNN and fusion heads are trained. This gives the classifier access to local texture and resampling evidence without fine-tuning the large CLIP backbone. Set `model.residual_enabled=false` to reproduce the CLIP-only baseline.
+The resulting feature feeds a binary classifier and a training-only contrastive projection head. With the default dimensions, approximately 0.36M parameters are trainable. The implementation also enforces total parameters below 2B and trainable parameters below 5M at runtime.
 
 ### Training Dataset
 
-The first version uses [OwensLab/CommunityForensics-Small](https://huggingface.co/datasets/OwensLab/CommunityForensics-Small). Review the upstream dataset card and license before redistribution or commercial use.
+Training uses the gated [Shanmuk4622/ai-image-detection-dataset](https://huggingface.co/datasets/Shanmuk4622/ai-image-detection-dataset) at a pinned commit. It contains 10,000 real images, each linked by `source_real_id` to six generated images made from the same image-grounded caption. The dataset inherits non-commercial research restrictions from ImageNet and the individual generator licenses; review the upstream card before use or redistribution.
 
-The default prepared subset contains 20,000 original images:
+The preparer retains every real parent and deterministically selects one of its six generated partners. It preserves the upstream pair-level split:
 
 | Split | Real | Fake | Total |
 |---|---:|---:|---:|
-| Train | 8,000 | 8,000 | 16,000 |
-| Validation | 2,000 | 2,000 | 4,000 |
+| Train | 7,056 | 7,056 | 14,112 |
+| Validation | 1,446 | 1,446 | 2,892 |
+| Test | 1,498 | 1,498 | 2,996 |
 
-Fake samples are stratified by generator architecture:
+Within each split, generator assignment is seeded and balanced across SD 1.5, SDXL, FLUX Schnell, Kandinsky 2.2, PixArt Sigma, and Würstchen. Counts differ by at most one. Test records remain in the manifest but are not used by `aigc-train` or checkpoint selection.
 
-| Architecture group | Target share |
-|---|---:|
-| Latent diffusion (`LatDiff`) | 60% |
-| GAN | 15% |
-| Pixel-space diffusion (`PixDiff`) | 10% |
-| Other | 15% |
-
-Systematic generators are assigned to train or validation by a stable hash of `model_name` and are capped at six images per model. Manual and Commercial architectures contain too few generator identities to satisfy all per-split architecture quotas with generator-disjoint splitting, so they use a stable image-level split and a higher cap. Real sources are capped to prevent a single source from dominating a split.
-
-The preparation pipeline excludes:
-
-- NSFW records.
-- DALL-E/OpenAI generator sources reserved by the challenge policy.
-- Real sources containing `COCO`, as a conservative leakage guard.
-- Invalid labels, unsafe or corrupted images, exact SHA-256 duplicates, and identical perceptual hashes.
-
-Images keep their original encoding and resolution. The 224×224 conversion happens online during training, not during acquisition.
+All source images already share a canonical 512×512 RGB PNG pipeline. Acquisition verifies the declared dimensions, format, pipeline version, and SHA-256. Exact and perceptual duplicates are removed at the parent-pair level. Because the challenge forbids training on COCO val2017, preparation also compares COCO real images against the locally prepared official WildFake real subset using high-resolution perceptual hashes and removes the complete parent pair on a confirmed match.
 
 #### Bounded and resumable shard acquisition
 
-The repository contains 186 original Parquet shards totaling approximately 241.9GiB. Its Dataset Viewer conversion is marked partial and exposes only four converted shards, which are insufficient for the configured architecture quotas. The default `local_shards` mode therefore bypasses the partial conversion and pins nine original shards selected using metadata-only architecture/source scans.
+The image Parquet payload is approximately 24.5GB. Preparation first downloads the small metadata index, fixes the exact 20,000 selected IDs, and then scans pinned image shards with a bounded two-file prefetch queue. Only selected image bytes are retained long-term, typically around 7GB.
 
-The selected source shards total approximately 9.86GiB. Acquisition remains bounded by `max_shard_cache_gb`, `max_scanned`, and `max_download_gb`:
+`preparation_state.json`, `manifest.jsonl`, and `audit.json` are atomically checkpointed. The state records the config fingerprint, exact expected IDs, completed shards, and extracted IDs. Re-running resumes the first unfinished shard without relying on a mutable row offset. Finished files are removed only from the project-owned payload cache; the global Hugging Face cache is never deleted. Hub transport failures use exponential backoff.
 
-- `hf_hub_download` caches complete source shards and resumes interrupted file downloads.
-- PyArrow reads each completed shard locally without further image range requests.
-- Manifest and audit files are atomically checkpointed every 1,000 scanned rows.
-- Common Hub transport failures are retried with exponential backoff.
-- Re-running the same command reuses completed shards and resumes incomplete ones.
-- SHA-256 deduplication makes a replayed boundary row idempotent.
-- SIGTERM, SIGHUP, exceptions, and Ctrl-C preserve the latest recoverable state. SIGKILL and power loss fall back to the last periodic checkpoint.
+The dataset is gated. Accept its conditions on Hugging Face and run `hf auth login` before preparation. The token is read from the active user environment and is never printed or stored in project artifacts.
 
-The final dataset is accepted only after every class and architecture quota is satisfied.
+#### Label-independent standardization and nuisance audit
 
-`manifest.jsonl` is the source of truth for training. The number of files under `images/` may be larger after an interrupted run because unreferenced files are deliberately not deleted automatically.
+Before spatial views are generated, both classes pass through the same optional random standardizer. It conservatively samples a resize round trip, a JPEG/WebP re-encode, or both. The standardized base image is shared by clean and degraded branches. Training draws are stochastic; validation, test, and official evaluation use a seed derived from the record ID.
+
+After successful preparation, a lightweight `HistGradientBoostingClassifier` attempts to predict the label from fixed pixel statistics such as colour moments, entropy, sharpness, blockiness, edges, and frequency-band energy. `nuisance_report.json` compares raw canonical images with deterministic standardized images and reports validation/test AUROC, AP, balanced accuracy, F1, confusion matrices, per-generator results, and feature importance. This report is informational and never blocks training; high low-level separability can represent either an unwanted shortcut or a genuine generator fingerprint.
 
 ### Paired Robust Training
 
@@ -117,11 +96,11 @@ L = 1.0 × mean(BCE(clean), BCE(degraded))
 
 The two BCE terms teach classification on both clean and transformed inputs. Logit consistency treats the clean prediction as a stable target for its degraded counterpart. The supervised contrastive term groups clean and degraded projections by real/fake label within each batch.
 
-Default optimization uses AdamW, cosine decay after 10% linear warmup, FP16 automatic mixed precision, gradient clipping, and early stopping. A micro-batch of 16 with two-step gradient accumulation gives an effective batch size of 32. Clean and transformed views are combined into one encoder invocation to improve GPU occupancy while preserving the loss formulation.
+Default optimization uses AdamW, cosine decay after 10% linear warmup, FP16 automatic mixed precision, gradient clipping, and early stopping. A micro-batch of 32 gives an effective batch size of 32. Clean and transformed views are combined into one encoder invocation to improve GPU occupancy while preserving the loss formulation.
 
 ### Validation and Evaluation
 
-Validation transforms are seeded from the project seed and record ID, making metrics comparable across runs. The validation fake generators are disjoint from training generators.
+Validation transforms are seeded from the project seed and record ID, making metrics comparable across runs. Parent pairs never cross train, validation, or test splits.
 
 Every epoch reports metrics separately for clean and degraded validation inputs:
 
@@ -133,7 +112,20 @@ Every epoch reports metrics separately for clean and degraded validation inputs:
 
 The checkpoint selection score is the arithmetic mean of clean and degraded AUROC. This avoids choosing a model that performs well only on pristine images or only on the sampled degradation distribution.
 
-For a final robustness report, evaluate `best.pt` on an external generator-disjoint dataset and on a severity matrix for each transformation. That external test suite and the final competition inference CLI are intentionally outside the current implementation.
+The external evaluation command uses the challenge-prescribed WildFake subset: 4,998 COCO val2017 real images and 8,843 DALL-E Advanced fake images. It reports the clean result and every severity listed in the challenge statement.
+
+### Visible AI watermark detection
+
+The provenance scanner checks the four image corners for visible AI-generation marks. It recognizes common Chinese vendors such as Doubao/Seedream, Jimeng/Dreamina, Tongyi Wanxiang, and Tencent Hunyuan, plus overseas labels from DALL·E, Google Imagen/Gemini, Midjourney, Adobe Firefly, Stable Diffusion, FLUX, Ideogram, Leonardo, Microsoft Designer, Meta AI, and Canva. OCR is attempted when Tesseract is installed; a conservative pixel fallback also detects the compact white `豆包AI生成` corner mark when OCR is unavailable.
+
+Run a watermark-only scan:
+
+```bash
+uv sync --extra dev --extra cv
+uv run aigc-watermark --config configs/default.yaml /path/to/image-or-directory
+```
+
+The provenance command includes the same result under each record's `watermark` field. Visible marks are provenance hints rather than signatures: they can be cropped, copied, or added after generation, so their absence does not prove an image is real.
 
 ## Installation
 
@@ -151,204 +143,12 @@ uv sync --extra dev
 
 All runtime parameters are centralized in [configs/default.yaml](configs/default.yaml). Public commands accept only `--config` and optional repeated `--set section.key=value` overrides.
 
-## Visualize high-frequency residuals
-
-Render a demo panel containing the input, fixed-filter residual heatmaps, and a clean-versus-degraded residual-energy chart:
-
-```bash
-uv run aigc-visualize-residuals \
-  --config configs/default.yaml \
-  --output-dir artifacts/visualizations
-```
-
-To inspect a specific image, add `--input /absolute/path/to/image.jpg`. The generated `high_frequency_residual_demo.png` shows how resize and JPEG recompression change local high-frequency responses; `residual_energy_chart.png` summarizes the mean absolute response for each fixed filter.
-
-## Visualize RGBA channels and suspicious regions
-
-Inspect the four channels of an image and render heuristic red overlays for channel-specific anomalies:
-
-```bash
-uv run aigc-visualize-rgba \
-  --input /absolute/path/to/image.png \
-  --output-dir artifacts/rgba_visualizations
-```
-
-`rgba_channel_analysis.png` shows R/G/B/A channel images in the first row and their highlighted regions in the second row. `rgba_residual_chart.png` compares mean and P99 local residual energy. For RGB channels, highlights indicate unusually strong local high-frequency response; for A, highlights indicate non-opaque pixels or abrupt alpha transitions. These are visual investigation cues, not proof of tampering or AI generation.
-
-## C2PA and EXIF provenance report
-
-`aigc-provenance` inspects source-file metadata without modifying the asset. It keeps C2PA integrity, signer trust, and editable EXIF hints separate:
-
-- A **trusted C2PA** assertion has valid cryptographic integrity and a signing credential accepted by the configured trust material. A trusted `trainedAlgorithmicMedia` declaration is high-confidence publisher provenance.
-- A **valid but untrusted C2PA** assertion has intact hashes and signatures, but the signer identity is not trusted or trust was not checked. Its source-type declaration is reported at medium confidence.
-- A trusted or valid `digitalCapture` assertion supports camera capture, but does not rule out later edits.
-- EXIF camera and software fields are low-confidence hints only: they are commonly stripped, can be edited, and their absence is not evidence of AI generation.
-
-Install the optional C2PA and HEIC SDKs. For the most compatible parser, also install
-the official Rust CLI (`c2patool` is the command-line tool from the current
-`c2pa-rs` project):
-
-```bash
-uv sync --extra provenance
-brew install c2patool
-```
-
-The inspector invokes `c2patool <image>` first and parses its default JSON
-manifest output. If the binary is unavailable or cannot parse the asset, it
-falls back to `c2pa-python`. Set an explicit binary path or timeout when
-needed:
-
-```bash
-uv run aigc-provenance \
-  --config configs/default.yaml \
-  --set provenance.c2pa_tool_path=/opt/homebrew/bin/c2patool \
-  --set provenance.c2pa_tool_timeout_seconds=60 \
-  --input /absolute/path/to/image.heic \
-  --output artifacts/provenance-report.json
-```
-
-Create a structured JSON report for one file or a directory:
-
-```bash
-uv run aigc-provenance \
-  --config configs/default.yaml \
-  --input /absolute/path/to/image-or-directory \
-  --output artifacts/provenance-report.json
-```
-
-The default C2PA configuration avoids remote manifest and OCSP retrieval. This keeps inspection local and reproducible. For a network-enabled trust check, explicitly opt in:
-
-```bash
-uv run aigc-provenance \
-  --config configs/default.yaml \
-  --set provenance.c2pa_remote_manifest_fetch=true \
-  --set provenance.c2pa_ocsp_fetch=true \
-  --input /absolute/path/to/image.jpg \
-  --output artifacts/provenance-report.json
-```
-
-The JSON report includes the source SHA-256, selected EXIF fields, C2PA validation state and actions, and a conservative `decision`. `integrity_valid` records C2PA cryptographic validity, while `credential_trusted` separately records signer trust (`true`, `false`, or `null` when trust was not established). Only `ai_declared_by_trusted_c2pa` is treated as high-confidence AI provenance; `ai_declared_by_valid_c2pa` is medium confidence. `inconclusive` must not be interpreted as “real”.
-
-The command also writes a separate semantic summary JSON beside the detailed
-report, using the `<report>-semantic.json` filename. It provides explicit
-`verdict` values (`real`, `fake`, or `unknown`), Chinese labels, confidence,
-the C2PA conclusion, and an EXIF detail assessment. A verified C2PA source-type
-assertion is the primary basis for the verdict: trusted `trainedAlgorithmicMedia`
-is reported as `fake`, while trusted `digitalCapture` is reported as `real`.
-Detailed EXIF is reported as strong metadata support, but it cannot by itself
-prove that an image is real because EXIF can be edited or removed. Use
-`--semantic-output` to override the summary path. The detailed per-image record
-also exposes the same object as `authenticity_summary`.
-
-### Visible AI watermark detection
-
-The provenance inspector also checks the four image corners for visible AI
-watermarks. It recognizes Chinese and English labels for 豆包/Seedream, 即梦,
-通义万相, 腾讯混元, DALL·E/ChatGPT, Google Imagen/Gemini, Midjourney, Adobe
-Firefly, Stable Diffusion, FLUX, Ideogram, Leonardo, Microsoft Designer/Bing,
-Meta AI, Canva, and generic “AI generated” marks. OCR uses the optional
-Tesseract executable when available; missing OCR support is reported as a
-degraded result rather than a failure.
-
-Watermark matches are included under each record's `watermark` field and are
-treated as medium-confidence, visible-evidence hints. They do not override a
-cryptographically valid C2PA camera or trained-media assertion, and a missing
-watermark does not prove that an image is real. To run this layer by itself:
-
-```bash
-uv run aigc-watermark \
-  --config configs/default.yaml \
-  --input /absolute/path/to/image-or-directory \
-  --output artifacts/watermark-report.json
-```
-
-Install Tesseract and Chinese language data for best results, or disable OCR
-explicitly with `--set watermark.ocr_enabled=false` when only the report schema
-is needed.
-The basic image properties `format`, `width`, `height`, and `pixel_count` are
-structural properties, not detailed EXIF, and do not increase the metadata
-confidence level.
-
-## Traditional CV perspective analysis
-
-`aigc-perspective` uses grayscale conversion, Gaussian smoothing, Canny edges,
-probabilistic Hough lines, geometric line intersection, and long-contour
-curvature checks. It does not use a learned model. The analyzer first selects
-long line segments whose lengths fall in the dominant similar-length band, then
-clusters intersections of the corresponding infinite lines. It reports the
-coordinates and supporting line indices for each cluster.
-
-Install the optional OpenCV runtime:
-
-```bash
-uv sync --extra cv
-```
-
-Analyze one image:
-
-```bash
-uv run aigc-perspective \
-  --config configs/default.yaml \
-  --input /absolute/path/to/image.jpg
-```
-
-By default, the command writes both files under
-`output/perspective_show/`:
-`<input>-perspective-report.json` and `<input>-perspective-overlay.jpg`.
-`--output` can override the JSON path or specify an output directory, while
-`--visual-output` is optional and can override the annotated image path or
-directory:
-
-```bash
-uv run aigc-perspective \
-  --config configs/default.yaml \
-  --input /absolute/path/to/image.jpg \
-  --output artifacts/perspective-report.json \
-  --visual-output artifacts/perspective-overlay.jpg
-```
-
-When the overlay is generated, the image contains the selected long lines
-(`L1`, `L2`, ...), intersection clusters (`V1`, `V2`, ...), and a banner with
-the estimated perspective relationship.
-Paths without a suffix are treated as directories. Image outputs must use a
-supported OpenCV extension such as `.jpg`, `.png`, `.bmp`, `.tif`, or `.webp`;
-the writer uses a temporary file with that extension to avoid OpenCV's
-“could not find a writer for the specified extension” error.
-
-The `perspective.relationship` field can be
-`single_point_perspective`, `two_point_perspective`,
-`single_point_perspective_with_outliers`, `three_point_perspective`, `fisheye_perspective`,
-`multiple_or_ambiguous_points`, `no_stable_perspective`, or
-`insufficient_evidence`. A point may be outside the image because a vanishing
-point is an intersection of extended lines; this is why the report preserves
-its coordinates rather than restricting points to the visible image rectangle.
-The fisheye label is a conservative heuristic based on curved long contours
-and the absence of stable straight-line convergence; it is not a lens-profile
-calibration result.
-
-Line selection uses edge geometry and segment length, not similarity of the
-original pixels' colors. In the visual output, solid portions are the detected
-segments and dashed portions are their infinite-line extensions clipped to the
-image rectangle. Small white circles indicate additional pairwise intersections
-that are not part of the dominant vanishing-point cluster.
-
-The report also contains `detection.parallel_groups`. Each group lists the
-supporting line indices, angle spread, length variation, color distance, and
-`parallel_to_camera` relationship. These are image-plane parallel groups: they
-are treated as parallel to the camera image plane, not as evidence that the
-corresponding real-world edges are physically parallel.
-
-Fisheye evidence now uses elongated connected edge contours and estimates a
-centerline for each contour. It combines centerline deviation from a straight
-fit, centerline chord excess, and tangent-angle change, and requires multiple
-independent long contours. This reduces false positives from short texture
-edges and closed object outlines while retaining a conservative fish-eye label.
-
 ## Dataset Preparation
 
-Authenticate once if a Hugging Face token is available:
+First prepare the prescribed WildFake subset used by the leakage audit, then accept the gated training dataset terms and authenticate:
 
 ```bash
+uv run aigc-prepare-official-eval --config configs/default.yaml
 hf auth login
 ```
 
@@ -356,27 +156,25 @@ Prepare or resume the default subset:
 
 ```bash
 uv run aigc-prepare \
-  --config configs/default.yaml \
-  --set data.hf_auth=required
+  --config configs/default.yaml
 ```
 
-`data.hf_auth` supports `auto`, `required`, and `disabled`. Tokens are read from the active user environment and are never stored in the project configuration or logs.
+`data.hf_auth` defaults to `required`. Tokens are read from the active user environment and are never stored in the project configuration or logs.
 
-A successful run must produce an audit with `complete: true` and a 20,000-line manifest. Verify both before training:
+A successful run produces `complete: true`. The manifest contains at most 20,000 records because any confirmed COCO val2017 overlap is removed as a complete real/fake pair:
 
 ```bash
-uv run python -c "import json; a=json.load(open('data/processed/community_forensics_20k/audit.json')); assert a['complete']; assert a['selected'] == 20000; print('Dataset is ready')"
+uv run python -c "import json; a=json.load(open('data/processed/ai_image_detection_20k/audit.json')); assert a['complete']; print(a['selected'], 'safe images')"
 
-wc -l data/processed/community_forensics_20k/manifest.jsonl
+wc -l data/processed/ai_image_detection_20k/manifest.jsonl
 ```
 
-If the configured scan limit is reached before all architecture quotas are filled, preserve the existing files and increase only the bound:
+If disk space is constrained, lower download concurrency so fewer complete source shards coexist in the project cache:
 
 ```bash
 uv run aigc-prepare \
   --config configs/default.yaml \
-  --set data.hf_auth=required \
-  --set data.max_scanned=250000
+  --set data.download_workers=1
 ```
 
 ## Training
@@ -406,19 +204,48 @@ uv run aigc-train \
 
 Resume validation rejects a checkpoint if its backbone identity or dataset revision differs from the active configuration and manifest.
 
+## Official WildFake Evaluation
+
+Prepare only the prescribed subset without downloading the 1.2TB WildFake repository or its complete 25.6GB DALL-E archive:
+
+```bash
+uv run aigc-prepare-official-eval --config configs/default.yaml
+```
+
+The preparer validates the pinned archive SHA-256 values, reads the official metadata, and uses HTTP Range requests to extract only COCO val2017 and DALL-E Advanced. Approximately 2.91GB of selected image payload is required. Preparation is isolated under `data/evaluation/` and never modifies the training manifest.
+
+Evaluate `best.pt` on clean inputs and the exact challenge severities:
+
+```bash
+uv run aigc-evaluate-official --config configs/default.yaml
+```
+
+The default matrix contains JPEG quality 90/70/50/30, Gaussian blur sigma 0.5/1.0/2.0, resize 0.5/0.25, Gaussian noise sigma 0.02/0.05/0.10, color jitter within 20%, and center crop 80%. Results and per-image predictions are written under `artifacts/evaluations/wildfake_official/`.
+
 ## Outputs
 
 ```text
-data/processed/community_forensics_20k/
-├── images/                 Original selected image files
-├── manifest.jsonl          Idempotent training manifest
-└── audit.json              Quotas, filters, revision, and preparation checkpoint
+data/processed/ai_image_detection_20k/
+├── images/                 Canonical selected image files
+├── manifest.jsonl          Idempotent paired manifest
+├── preparation_state.json  Exact resumable shard and ID state
+├── nuisance_report.json    Informational low-level bias probe
+└── audit.json              Revision, split counts, exclusions, and completion
 
 artifacts/runs/clip_b16_multiview/
 ├── best.pt                 Best trainable-head checkpoint
 ├── last.pt                 Latest optimizer/training state
 ├── metrics.jsonl           Timestamped epoch metrics
 └── resolved_config.yaml    Exact resolved run configuration
+
+data/evaluation/wildfake_official/
+├── images/                 Isolated official evaluation images
+├── manifest.jsonl          Exact 13,841-image evaluation manifest
+└── audit.json              Source archive identities and counts
+
+artifacts/evaluations/wildfake_official/
+├── results.json            Clean and severity-matrix metrics
+└── predictions.jsonl       Per-image confidence scores
 ```
 
 The checkpoints store the trainable detector heads, optimizer, scheduler, AMP scaler, epoch, global step, random state, complete configuration, dataset revision, backbone identity, and parameter counts. Frozen CLIP weights are not duplicated in the checkpoint.
@@ -431,14 +258,13 @@ Run the offline unit and CPU smoke tests:
 uv run pytest
 ```
 
-The suite covers strict configuration validation, sampling quotas and exclusions, interruption recovery, deterministic transforms, view-order invariance, frozen-backbone gradients, finite losses, metrics, checkpoint creation, and training resume.
+The suite covers strict configuration validation, paired generator selection, leakage exclusion, resumable checkpoints, nuisance probing, deterministic standardization, view-order invariance, frozen-backbone gradients, finite losses, metrics, checkpoint creation, and training resume.
 
 ## Known Limitations
 
 - The current model uses only semantic CLIP features; no residual, frequency-domain, or camera-pipeline branch is implemented.
-- Traditional perspective analysis is geometric evidence only and should not be treated as a standalone authenticity classifier.
-- CommunityForensics contains many related Stable Diffusion derivatives, so generator-level separation is stronger than random image splitting but weaker than evaluation on an independent generator family.
-- Perceptual deduplication removes identical pHashes but does not perform expensive global near-neighbor search.
+- The paired set covers six text-to-image generators but not image-to-image, editing, or the unseen DALL-E family used by the external benchmark.
+- The nuisance probe is diagnostic; it cannot by itself distinguish a harmful acquisition shortcut from a real synthesis fingerprint.
 - A binary detector is not proof of image authenticity. Operational use requires calibration, uncertainty handling, and explicit control of false positives on real images.
 - The project does not yet provide the final directory inference and JSON submission command.
 

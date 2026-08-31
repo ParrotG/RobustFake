@@ -1,248 +1,204 @@
+import hashlib
 import io
 import json
+from collections import Counter
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
-from PIL import Image, ImageDraw
+from PIL import Image
 
 from aigc_recognizer.config import load_config
 from aigc_recognizer.data.prepare import (
-    _iter_local_shards,
-    effective_real_source,
-    is_forbidden,
-    sample_rows,
-    stable_bucket,
+    PreparationError,
+    _checkpoint,
+    _describe_image,
+    _excluded_parents,
+    _extract_selected_rows,
+    _source_shards,
+    select_paired_metadata,
 )
 
 
 DEFAULT_CONFIG = Path(__file__).parents[1] / "configs" / "default.yaml"
 
 
-def image_bytes(index: int) -> bytes:
-    image = Image.new("RGB", (32, 32), (index * 13 % 255, index * 29 % 255, index * 47 % 255))
-    draw = ImageDraw.Draw(image)
-    draw.rectangle((index % 12, index % 9, 20 + index % 10, 24), outline="white", width=2)
+def metadata_rows(parent_count: int = 12) -> list[dict]:
+    generators = [
+        "sd15",
+        "sdxl",
+        "flux_schnell",
+        "kandinsky22",
+        "pixart_sigma",
+        "wuerstchen",
+    ]
+    rows = []
+    for index in range(parent_count):
+        parent = f"real_{index:06d}"
+        split = "train" if index < 6 else "val" if index < 9 else "test"
+        for generator in ["real", *generators]:
+            image_id = parent if generator == "real" else f"{generator}_{index:06d}"
+            rows.append(
+                {
+                    "image_id": image_id,
+                    "source_real_id": parent,
+                    "generator": generator,
+                    "label": int(generator != "real"),
+                    "sha256": hashlib.sha256(image_id.encode()).hexdigest(),
+                    "split": split,
+                }
+            )
+    return rows
+
+
+def png_bytes(value: int, size: int = 16) -> bytes:
     buffer = io.BytesIO()
-    image.save(buffer, format="PNG")
+    Image.new("RGB", (size, size), (value, value // 2, 255 - value)).save(buffer, "PNG")
     return buffer.getvalue()
 
 
-def identity_for_split(prefix: str, expected: str, train_percent: int = 50) -> str:
-    for index in range(10_000):
-        value = f"{prefix}-{index}"
-        actual = "train" if stable_bucket(value) < train_percent else "val"
-        if actual == expected:
-            return value
-    raise AssertionError("Unable to construct a stable split identity.")
-
-
-def test_sampler_is_balanced_generator_disjoint_and_idempotent(tmp_path: Path) -> None:
+def test_pair_selection_is_stable_balanced_and_split_safe() -> None:
     config = load_config(DEFAULT_CONFIG)
-    config.data.output_dir = str(tmp_path / "dataset")
-    config.data.manifest_path = str(tmp_path / "dataset" / "manifest.jsonl")
-    config.data.audit_path = str(tmp_path / "dataset" / "audit.json")
-    config.data.train_per_class = 4
-    config.data.val_per_class = 4
-    config.data.train_generator_percent = 50
-    config.data.architecture_ratios = {
-        "LatDiff": 0.25,
-        "GAN": 0.25,
-        "PixDiff": 0.25,
-        "other": 0.25,
-    }
-    config.data.max_real_source_fraction = 0.5
-    config.data.perceptual_deduplication = False
-    config.data.max_scanned = 100
+    config.data.expected_parent_count = 12
+    rows = metadata_rows()
 
-    rows = []
-    index = 0
-    for split in ("train", "val"):
-        for architecture in ("LatDiff", "GAN", "PixDiff", "other"):
-            model_name = identity_for_split(f"{split}-{architecture}", split)
-            rows.append(
-                {
-                    "image_name": f"fake-{index}.png",
-                    "image_data": image_bytes(index),
-                    "format": "PNG",
-                    "model_name": model_name,
-                    "nsfw_flag": False,
-                    "real_source": "LAION",
-                "subset": "Systematic",
-                    "label": 1,
-                    "architecture": architecture,
-                }
-            )
-            index += 1
-        for source in ("VISION", "FFHQ"):
-            needed = 2
-            found = 0
-            candidate = 0
-            while found < needed:
-                image_name = f"{split}-real-{source}-{candidate}.png"
-                identity = f"{image_name}|{source}"
-                actual = "train" if stable_bucket(identity) < 50 else "val"
-                candidate += 1
-                if actual != split:
-                    continue
-                rows.append(
-                    {
-                        "image_name": image_name,
-                        "image_data": image_bytes(index),
-                        "format": "PNG",
-                        "model_name": "real",
-                        "nsfw_flag": False,
-                        "real_source": source,
-                        "subset": "real",
-                        "label": 0,
-                        "architecture": "real",
-                    }
-                )
-                index += 1
-                found += 1
+    first = select_paired_metadata(rows, config)
+    second = select_paired_metadata(reversed(rows), config)
 
-    audit = sample_rows(rows, config, "test-revision")
-    first_manifest = Path(config.data.manifest_path).read_text(encoding="utf-8")
-    second_audit = sample_rows(rows, config, "test-revision")
-    second_manifest = Path(config.data.manifest_path).read_text(encoding="utf-8")
-    records = [json.loads(line) for line in first_manifest.splitlines()]
-
-    assert audit["complete"] is True
-    assert second_audit["selected"] == 16
-    assert first_manifest == second_manifest
-    assert len(records) == 16
-    train_models = {r["model_name"] for r in records if r["label"] == 1 and r["split"] == "train"}
-    val_models = {r["model_name"] for r in records if r["label"] == 1 and r["split"] == "val"}
-    assert train_models.isdisjoint(val_models)
+    assert first == second
+    assert len(first) == 24
+    for split, expected in (("train", 6), ("val", 3), ("test", 3)):
+        selected = [row for row in first.values() if row["split"] == split]
+        assert Counter(row["label"] for row in selected) == {0: expected, 1: expected}
+        generator_counts = Counter(row["generator"] for row in selected if row["label"] == 1)
+        assert max(generator_counts.values()) - min(generator_counts.values()) <= 1
+    split_by_parent = {}
+    for row in first.values():
+        split_by_parent.setdefault(row["source_real_id"], row["split"])
+        assert split_by_parent[row["source_real_id"]] == row["split"]
 
 
-def test_interrupted_sampler_checkpoints_and_resumes(tmp_path: Path) -> None:
+def test_pair_selection_rejects_missing_partner() -> None:
     config = load_config(DEFAULT_CONFIG)
-    config.data.output_dir = str(tmp_path / "dataset")
-    config.data.manifest_path = str(tmp_path / "dataset" / "manifest.jsonl")
-    config.data.audit_path = str(tmp_path / "dataset" / "audit.json")
-    config.data.train_per_class = 1
-    config.data.val_per_class = 1
-    config.data.train_generator_percent = 50
-    config.data.architecture_ratios = {
-        "LatDiff": 1.0,
-        "GAN": 0.0,
-        "PixDiff": 0.0,
-        "other": 0.0,
-    }
-    config.data.max_real_source_fraction = 1.0
-    config.data.perceptual_deduplication = False
-    config.data.checkpoint_every_scanned = 1
-
-    rows = []
-    for index, split in enumerate(("train", "val")):
-        rows.append(
-            {
-                "image_name": f"fake-{split}.png",
-                "image_data": image_bytes(index),
-                "format": "PNG",
-                "model_name": identity_for_split(f"resume-model-{split}", split),
-                "nsfw_flag": False,
-                "real_source": "LAION",
-                    "subset": "Systematic",
-                "label": 1,
-                "architecture": "LatDiff",
-            }
-        )
-    for index, split in enumerate(("train", "val"), start=2):
-        source = "VISION"
-        candidate = 0
-        while True:
-            image_name = f"resume-real-{split}-{candidate}"
-            assigned = (
-                "train"
-                if stable_bucket(f"{image_name}|{source}") < config.data.train_generator_percent
-                else "val"
-            )
-            if assigned == split:
-                break
-            candidate += 1
-        rows.append(
-            {
-                "image_name": image_name,
-                "image_data": image_bytes(index),
-                "format": "PNG",
-                "model_name": "real",
-                "nsfw_flag": False,
-                "real_source": source,
-                "subset": "real",
-                "label": 0,
-                "architecture": "real",
-            }
-        )
-
-    def interrupted_rows():
-        yield from rows[:2]
-        raise RuntimeError("simulated interruption")
-
-    with pytest.raises(RuntimeError, match="simulated interruption"):
-        sample_rows(interrupted_rows(), config, "resume-revision")
-    partial_audit = json.loads(Path(config.data.audit_path).read_text(encoding="utf-8"))
-    assert partial_audit["complete"] is False
-    assert partial_audit["selected"] == 2
-
-    resumed_audit = sample_rows(rows, config, "resume-revision")
-    assert resumed_audit["complete"] is True
-    assert resumed_audit["selected"] == 4
+    config.data.expected_parent_count = 12
+    rows = metadata_rows()
+    rows.pop()
+    with pytest.raises(PreparationError, match="does not have one real and six fakes"):
+        select_paired_metadata(rows, config)
 
 
-def test_real_source_falls_back_to_model_name_and_excludes_coco() -> None:
+def test_source_shard_preflight_is_bounded() -> None:
     config = load_config(DEFAULT_CONFIG)
-    coco = {"label": 0, "real_source": "N/A", "model_name": "COCO"}
-    vision = {"label": 0, "real_source": "N/A", "model_name": "VISION"}
+    siblings = [
+        SimpleNamespace(rfilename="real/train/a.parquet", size=100),
+        SimpleNamespace(rfilename="sd15/val/b.parquet", size=200),
+        SimpleNamespace(rfilename="metadata/manifest.parquet", size=10),
+    ]
+    assert _source_shards(siblings, config) == ["real/train/a.parquet", "sd15/val/b.parquet"]
+    config.data.max_download_gb = 1e-12
+    with pytest.raises(PreparationError, match="exceeding data.max_download_gb"):
+        _source_shards(siblings, config)
 
-    assert effective_real_source(coco) == "COCO"
-    assert effective_real_source(vision) == "VISION"
-    assert is_forbidden(coco, config) is True
-    assert is_forbidden(vision, config) is False
 
-
-def test_local_shard_reader_uses_completed_hub_file(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    import huggingface_hub
+def test_selected_parquet_row_is_validated_and_written(tmp_path: Path) -> None:
     import pyarrow as pa
     import pyarrow.parquet as pq
 
-    local_shard = tmp_path / "source.parquet"
-    pq.write_table(
-        pa.table(
-            {
-                "image_name": ["one.png"],
-                "image_data": [image_bytes(41)],
-                "label": [1],
-                "architecture": ["GAN"],
-                "model_name": ["test-generator"],
-                "subset": ["Manual"],
-                "real_source": ["N/A"],
-            }
-        ),
-        local_shard,
-    )
-
-    calls = []
-
-    def fake_download(**kwargs):
-        calls.append(kwargs)
-        return str(local_shard)
-
-    monkeypatch.setattr(huggingface_hub, "hf_hub_download", fake_download)
     config = load_config(DEFAULT_CONFIG)
-    config.data.shard_indices = [68]
-    rows = list(
-        _iter_local_shards(
-            config,
-            "test-revision",
-            "test-token",
-            ["data/HFCF_small_68.parquet"],
-        )
-    )
+    config.data.output_dir = str(tmp_path / "dataset")
+    config.data.expected_image_size = 16
+    content = png_bytes(80)
+    digest = hashlib.sha256(content).hexdigest()
+    source = {
+        "image": {"bytes": content, "path": None},
+        "image_id": "real_000001",
+        "source_real_id": "real_000001",
+        "label": 0,
+        "generator": "real",
+        "source_dataset": "imagenet",
+        "split": "validation",
+        "prompt": "a test image",
+        "width": 16,
+        "height": 16,
+        "pipeline_version": "1.2",
+        "sha256": digest,
+    }
+    parquet = tmp_path / "source.parquet"
+    pq.write_table(pa.Table.from_pylist([source]), parquet)
+    expected = {
+        "real_000001": {
+            "image_id": "real_000001",
+            "source_real_id": "real_000001",
+            "label": 0,
+            "generator": "real",
+            "split": "val",
+            "sha256": digest,
+        }
+    }
+    records = {}
 
-    assert len(rows) == 1
-    assert rows[0]["architecture"] == "GAN"
-    assert calls[0]["revision"] == "test-revision"
-    assert calls[0]["local_dir"] == config.data.shard_cache_dir
+    _extract_selected_rows(parquet, expected, config, records)
+
+    assert records["real_000001"]["split"] == "val"
+    assert records["real_000001"]["source_split"] == "validation"
+    assert records["real_000001"]["content_sha256"] == digest
+    assert (Path(config.data.output_dir) / records["real_000001"]["path"]).is_file()
+
+
+def test_checkpoint_is_idempotent_and_preserves_expected_ids(tmp_path: Path) -> None:
+    config = load_config(DEFAULT_CONFIG)
+    config.data.output_dir = str(tmp_path / "dataset")
+    config.data.manifest_path = str(tmp_path / "dataset" / "manifest.jsonl")
+    config.data.audit_path = str(tmp_path / "dataset" / "audit.json")
+    config.data.state_path = str(tmp_path / "dataset" / "state.json")
+    image = Path(config.data.output_dir) / "images/train/real/a.png"
+    image.parent.mkdir(parents=True)
+    image.write_bytes(png_bytes(30))
+    record = {
+        "id": "a",
+        "path": "images/train/real/a.png",
+        "label": 0,
+        "split": "train",
+        "generator": "real",
+        "source_real_id": "a",
+    }
+    arguments = (config, "fingerprint", {"one.parquet"}, ["one.parquet"], {"a"}, {"a": record})
+
+    _checkpoint(*arguments, False, "test")
+    first = Path(config.data.manifest_path).read_bytes()
+    _checkpoint(*arguments, False, "test")
+
+    assert Path(config.data.manifest_path).read_bytes() == first
+    state = json.loads(Path(config.data.state_path).read_text())
+    assert state["expected_ids"] == ["a"]
+    assert state["completed_shards"] == ["one.parquet"]
+
+
+def test_official_match_excludes_entire_parent_pair(tmp_path: Path) -> None:
+    config = load_config(DEFAULT_CONFIG)
+    config.data.official_leakage_root = str(tmp_path / "official")
+    config.data.official_leakage_manifest = str(tmp_path / "official" / "manifest.jsonl")
+    official_image = tmp_path / "official" / "images" / "real.png"
+    official_image.parent.mkdir(parents=True)
+    official_image.write_bytes(png_bytes(120))
+    Path(config.data.official_leakage_manifest).write_text(
+        json.dumps({"id": "official", "path": "images/real.png", "label": 0}) + "\n"
+    )
+    description = _describe_image(official_image.read_bytes(), config)
+    common = {
+        "source_real_id": "real_1",
+        "content_sha256": hashlib.sha256(official_image.read_bytes()).hexdigest(),
+        "perceptual_hash": description["perceptual_hash"],
+        "difference_hash": description["difference_hash"],
+    }
+    records = {
+        "real_1": {**common, "label": 0, "source_dataset": "coco"},
+        "fake_1": {
+            **common,
+            "label": 1,
+            "source_dataset": "sd15",
+            "content_sha256": "f" * 64,
+        },
+    }
+
+    assert _excluded_parents(records, config) == {"real_1"}
