@@ -1,6 +1,12 @@
 from PIL import Image, ImageFilter, ImageEnhance
 
-from aigc_recognizer.degradation_restore import analyze_degradation, restore_image
+from aigc_recognizer.degradation_restore import (
+    _adaptive_gaussian_unsharp,
+    _gradient_metrics,
+    _to_rgb_array,
+    analyze_degradation,
+    restore_image,
+)
 
 
 def _sample() -> Image.Image:
@@ -25,7 +31,20 @@ def test_blurred_input_gets_restoration_without_shape_change() -> None:
     restored, operations = restore_image(blurred, report)
     assert restored.size == blurred.size
     assert restored.mode == "RGB"
-    assert operations
+    assert any(operation.startswith("gaussian_unsharp(") for operation in operations)
+
+
+def test_adaptive_gaussian_parameters_raise_blurred_edge_response() -> None:
+    blurred = _sample().filter(ImageFilter.GaussianBlur(4.0))
+    restored, parameters = _adaptive_gaussian_unsharp(blurred, confidence=0.9)
+    before_gradient = _gradient_metrics(_to_rgb_array(blurred))[0]
+    after_gradient = _gradient_metrics(_to_rgb_array(restored))[0]
+
+    assert 0.5 <= parameters.radius <= 3.0
+    assert parameters.percent >= 70
+    assert parameters.threshold in {2, 4, 7}
+    assert parameters.residual_gain > 1.0
+    assert after_gradient > before_gradient
 
 
 def test_color_shift_restoration_is_non_destructive() -> None:

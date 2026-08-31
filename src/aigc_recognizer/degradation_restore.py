@@ -42,6 +42,15 @@ class DegradationReport:
         return payload
 
 
+@dataclass(frozen=True)
+class GaussianSharpenParameters:
+    radius: float
+    percent: int
+    threshold: int
+    residual_gain: float
+    clipping_increase: float
+
+
 def _sigmoid(value: float) -> float:
     return 1.0 / (1.0 + math.exp(-max(-40.0, min(40.0, value))))
 
@@ -140,6 +149,80 @@ def _gray_world(image: Image.Image, strength: float = 0.45) -> Image.Image:
     return Image.fromarray(corrected, mode="RGB")
 
 
+def _high_frequency_energy(image: Image.Image) -> float:
+    maps = _fixed_residuals(_to_rgb_array(image))
+    return float(np.mean(np.abs(np.stack(maps))))
+
+
+def _clipping_fraction(image: Image.Image) -> float:
+    values = _to_rgb_array(image)
+    return float(((values <= 0.01) | (values >= 0.99)).mean())
+
+
+def _adaptive_gaussian_unsharp(
+    image: Image.Image,
+    confidence: float,
+) -> tuple[Image.Image, GaussianSharpenParameters]:
+    """Tune Gaussian unsharp parameters against the fixed residual response.
+
+    Candidate selection rewards a controlled increase in Laplacian/Sobel
+    energy and penalizes clipped pixels and excessive high-frequency gain.
+    This makes the sharpening strength image-dependent while avoiding the
+    unstable halos produced by blindly maximizing sharpness.
+    """
+    confidence = max(0.0, min(1.0, confidence))
+    baseline_energy = max(_high_frequency_energy(image), 1e-8)
+    baseline_clipping = _clipping_fraction(image)
+    target_gain = 1.18 + 0.72 * confidence
+    radii = sorted(
+        {
+            round(0.55 + 0.45 * confidence, 2),
+            round(0.90 + 0.85 * confidence, 2),
+            round(1.30 + 1.20 * confidence, 2),
+        }
+    )
+    percents = sorted(
+        {
+            int(round(70 + 55 * confidence)),
+            int(round(105 + 95 * confidence)),
+            int(round(145 + 135 * confidence)),
+        }
+    )
+    thresholds = (2, 4, 7)
+    best_image = image.copy()
+    best_parameters = GaussianSharpenParameters(0.0, 0, 0, 1.0, 0.0)
+    best_score = -float("inf")
+    for radius in radii:
+        for percent in percents:
+            for threshold in thresholds:
+                candidate = image.filter(
+                    ImageFilter.UnsharpMask(
+                        radius=radius,
+                        percent=percent,
+                        threshold=threshold,
+                    )
+                )
+                gain = _high_frequency_energy(candidate) / baseline_energy
+                clipping_increase = max(0.0, _clipping_fraction(candidate) - baseline_clipping)
+                useful_gain = min(gain, target_gain) / target_gain
+                overshoot = max(0.0, gain - target_gain)
+                score = useful_gain - 0.55 * overshoot - 5.0 * clipping_increase
+                # Prefer lower Gaussian strength when two candidates are
+                # effectively equivalent, reducing ringing on broad edges.
+                score -= 0.002 * radius + 0.00001 * percent
+                if score > best_score:
+                    best_score = score
+                    best_image = candidate
+                    best_parameters = GaussianSharpenParameters(
+                        radius,
+                        percent,
+                        threshold,
+                        round(gain, 4),
+                        round(clipping_increase, 6),
+                    )
+    return best_image, best_parameters
+
+
 def restore_image(image: Image.Image, report: DegradationReport | None = None) -> tuple[Image.Image, list[str]]:
     """Apply conservative, reversible restoration based on detected evidence."""
     image = ImageOps.exif_transpose(image).convert("RGB")
@@ -162,13 +245,17 @@ def restore_image(image: Image.Image, report: DegradationReport | None = None) -
             report.artifacts["gaussian_blur"].confidence,
             report.artifacts["resize"].confidence,
         )
-        radius = 1.0 + 0.8 * confidence
-        amount = 0.7 + 0.8 * confidence
-        blurred = restored.filter(ImageFilter.GaussianBlur(radius=radius))
-        restored = Image.blend(restored, ImageEnhance.Sharpness(restored).enhance(1.0 + amount), 0.72)
+        restored, parameters = _adaptive_gaussian_unsharp(restored, confidence)
         # A mild contrast lift recovers edge separation after resize without changing dimensions.
         restored = ImageEnhance.Contrast(restored).enhance(1.0 + 0.06 * confidence)
-        applied.append("unsharp_restore")
+        applied.append(
+            "gaussian_unsharp("
+            f"radius={parameters.radius:.2f},"
+            f"percent={parameters.percent},"
+            f"threshold={parameters.threshold},"
+            f"residual_gain={parameters.residual_gain:.4f}"
+            ")"
+        )
     if report.artifacts["color_jitter"].detected:
         restored = _gray_world(restored)
         restored = ImageEnhance.Color(restored).enhance(0.94)

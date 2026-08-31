@@ -144,7 +144,7 @@ uv run aigc-restore-degradation \
   --output-dir /Users/furnace/Downloads/degradation_restore_examples
 ```
 
-Each input produces a restored PNG, a fixed-residual diagnostic panel, and a JSON report containing raw metrics, per-artifact confidence, detected degradations, and applied operations. Restoration is heuristic and cannot reconstruct information destroyed by severe blur or resampling.
+Each input produces a restored PNG, a fixed-residual diagnostic panel, and a JSON report containing raw metrics, per-artifact confidence, detected degradations, and applied operations. For Gaussian blur or resize evidence, restoration searches Gaussian unsharp radius, percent, and threshold against the existing fixed-filter residual energy, while penalizing clipping and excessive high-frequency gain. Restoration is heuristic and cannot reconstruct information destroyed by severe blur or resampling.
 
 ## Installation
 
