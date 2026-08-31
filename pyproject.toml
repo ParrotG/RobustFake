@@ -33,6 +33,7 @@ cv = [
 aigc-prepare = "aigc_recognizer.data.prepare:main"
 aigc-train = "aigc_recognizer.train:main"
 aigc-provenance = "aigc_recognizer.provenance:main"
+aigc-watermark = "aigc_recognizer.watermark:main"
 aigc-perspective = "aigc_recognizer.perspective:main"
 aigc-visualize-residuals = "aigc_recognizer.visualize_residuals:main"
 aigc-visualize-rgba = "aigc_recognizer.visualize_rgba:main"

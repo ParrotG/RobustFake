@@ -21,6 +21,7 @@ from typing import Any
 from PIL import ExifTags, Image, UnidentifiedImageError
 
 from .config import AppConfig, ProvenanceConfig, config_argument_parser, load_config
+from .watermark import inspect_watermark
 
 
 IMAGE_SUFFIXES = frozenset({".avif", ".heic", ".heics", ".heif", ".heifs", ".hif", ".jpeg", ".jpg", ".png", ".tif", ".tiff", ".webp"})
@@ -468,7 +469,11 @@ def inspect_c2pa(path: Path, settings: ProvenanceConfig) -> dict[str, Any]:
     return sdk_report
 
 
-def classify_provenance(exif: Mapping[str, Any], c2pa: Mapping[str, Any]) -> dict[str, Any]:
+def classify_provenance(
+    exif: Mapping[str, Any],
+    c2pa: Mapping[str, Any],
+    watermark: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     """Produce an intentionally conservative, evidence-scoped conclusion."""
     c2pa_valid = bool(c2pa.get("integrity_valid", c2pa.get("signature_valid")))
     credential_trusted = c2pa.get("credential_trusted") is True
@@ -505,6 +510,14 @@ def classify_provenance(exif: Mapping[str, Any], c2pa: Mapping[str, Any]) -> dic
             "classification": "camera_capture_declared_by_valid_c2pa",
             "confidence": "medium",
             "reason": reason,
+        }
+    if watermark and watermark.get("detected"):
+        vendors = watermark.get("vendors", [])
+        vendor_text = ", ".join(str(item) for item in vendors) or "known AI vendor"
+        return {
+            "classification": "visible_ai_watermark",
+            "confidence": "medium",
+            "reason": f"A visible watermark associated with {vendor_text} was detected; visible marks can be removed or added.",
         }
     if c2pa.get("manifest_present"):
         return {
@@ -578,6 +591,7 @@ def semantic_assessment(
     exif: Mapping[str, Any],
     c2pa: Mapping[str, Any],
     decision: Mapping[str, Any] | None = None,
+    watermark: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Create a clear real/fake/unknown summary from C2PA and EXIF evidence."""
     exif_evidence = _exif_evidence(exif)
@@ -586,7 +600,8 @@ def semantic_assessment(
     has_trained_media = bool(c2pa.get("trained_algorithmic_media_markers"))
     has_camera_capture = bool(c2pa.get("camera_capture_markers"))
     ai_exif_hint = bool(exif.get("ai_software_markers"))
-    base_classification = str((decision or classify_provenance(exif, c2pa)).get("classification", "inconclusive"))
+    watermark = watermark if isinstance(watermark, Mapping) else {}
+    base_classification = str((decision or classify_provenance(exif, c2pa, watermark)).get("classification", "inconclusive"))
 
     def result(
         *,
@@ -615,6 +630,7 @@ def semantic_assessment(
             "decision_classification": base_classification,
             "reason": reason,
             "limitations": limitations,
+            "watermark_evidence": watermark,
         }
 
     if c2pa_valid and has_trained_media:
@@ -671,6 +687,26 @@ def semantic_assessment(
             limitations=["签名凭证未建立信任。", "C2PA 数字采集声明不能排除后续编辑。"],
         )
 
+    if watermark.get("detected"):
+        vendors = watermark.get("vendors", [])
+        vendor_text = ", ".join(str(item) for item in vendors) or "已知 AI 厂商"
+        return result(
+            assessment="visible_ai_watermark",
+            synthetic_likelihood="likely",
+            capture_provenance="not_verified",
+            confidence="medium",
+            primary_evidence="visible_watermark",
+            verdict="fake",
+            verdict_label_zh="疑似虚假（检测到 AI 水印）",
+            c2pa_conclusion=(
+                "未发现可用于判断的 C2PA 声明。"
+                if not c2pa.get("manifest_present")
+                else "存在 C2PA，但未形成可用于判断真实来源的有效结论。"
+            ),
+            reason=f"在图像角落检测到与 {vendor_text} 相关的可见水印；这支持 AI 生成判断，但水印可能被后期添加或移除。",
+            limitations=["可见水印不是加密签名，不能单独证明图片来源。", "裁剪、压缩或 OCR 失败可能导致漏检。"],
+        )
+
     if ai_exif_hint:
         return result(
             assessment="ai_software_hint_only",
@@ -708,7 +744,8 @@ def inspect_image(path: str | Path, config: AppConfig) -> dict[str, Any]:
     source = Path(path)
     exif = inspect_exif(source, config.data.max_image_pixels)
     c2pa = inspect_c2pa(source, config.provenance)
-    decision = classify_provenance(exif, c2pa)
+    watermark = inspect_watermark(source, config)
+    decision = classify_provenance(exif, c2pa, watermark)
     return {
         "schema_version": 1,
         "path": str(source),
@@ -716,8 +753,9 @@ def inspect_image(path: str | Path, config: AppConfig) -> dict[str, Any]:
         "sha256": _hash_file(source),
         "exif": exif,
         "c2pa": c2pa,
+        "watermark": watermark,
         "decision": decision,
-        "authenticity_summary": semantic_assessment(exif, c2pa, decision),
+        "authenticity_summary": semantic_assessment(exif, c2pa, decision, watermark),
     }
 
 
@@ -780,6 +818,7 @@ def _semantic_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
                 "reason": assessment.get("reason", "没有决定性来源证据。"),
                 "c2pa_conclusion": assessment.get("c2pa_conclusion", ""),
                 "exif_conclusion": assessment.get("exif_conclusion", {}),
+                "watermark_evidence": assessment.get("watermark_evidence", {}),
             }
         )
     counts = {verdict: sum(record["verdict"] == verdict for record in semantic_records) for verdict in ("real", "fake", "unknown")}

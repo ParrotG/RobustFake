@@ -1,6 +1,9 @@
 # Python-generated files
 __pycache__/
 *.py[oc]
+*.log
+.DS_Store
+.playwright-cli/
 build/
 dist/
 wheels/
@@ -12,6 +15,7 @@ wheels/
 # Local datasets, model caches, and training outputs.
 /data/
 /artifacts/
+/output/
 .pytest_cache/
 .coverage
 

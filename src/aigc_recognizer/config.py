@@ -158,6 +158,20 @@ class ProvenanceConfig:
 
 
 @dataclass
+class WatermarkConfig:
+    """Settings for visible AI-watermark recognition."""
+
+    enabled: bool = True
+    ocr_enabled: bool = True
+    tesseract_path: str | None = None
+    ocr_timeout_seconds: float = 12.0
+    max_dimension: int = 1600
+    corner_fraction: float = 0.38
+    upscale_factor: int = 3
+    languages: str = "eng+chi_sim"
+
+
+@dataclass
 class PerspectiveConfig:
     max_dimension: int = 1600
     canny_low_threshold: int = 50
@@ -204,6 +218,7 @@ class AppConfig:
     training: TrainingConfig = field(default_factory=TrainingConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
     provenance: ProvenanceConfig = field(default_factory=ProvenanceConfig)
+    watermark: WatermarkConfig = field(default_factory=WatermarkConfig)
     perspective: PerspectiveConfig = field(default_factory=PerspectiveConfig)
 
     def validate(self) -> None:
@@ -276,6 +291,13 @@ class AppConfig:
             raise ConfigError("provenance.max_files must be positive.")
         if self.provenance.c2pa_tool_timeout_seconds <= 0:
             raise ConfigError("provenance.c2pa_tool_timeout_seconds must be positive.")
+        watermark = self.watermark
+        if watermark.ocr_timeout_seconds <= 0 or watermark.max_dimension <= 0:
+            raise ConfigError("Watermark OCR timeout and max dimension must be positive.")
+        if not 0 < watermark.corner_fraction <= 1:
+            raise ConfigError("watermark.corner_fraction must be in (0, 1].")
+        if watermark.upscale_factor <= 0:
+            raise ConfigError("watermark.upscale_factor must be positive.")
         perspective = self.perspective
         if perspective.max_dimension <= 0 or perspective.hough_threshold <= 0:
             raise ConfigError("Perspective image dimension and Hough threshold must be positive.")
@@ -337,6 +359,7 @@ _SECTIONS: dict[str, type[Any]] = {
     "training": TrainingConfig,
     "output": OutputConfig,
     "provenance": ProvenanceConfig,
+    "watermark": WatermarkConfig,
     "perspective": PerspectiveConfig,
 }
 

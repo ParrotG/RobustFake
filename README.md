@@ -239,6 +239,32 @@ Detailed EXIF is reported as strong metadata support, but it cannot by itself
 prove that an image is real because EXIF can be edited or removed. Use
 `--semantic-output` to override the summary path. The detailed per-image record
 also exposes the same object as `authenticity_summary`.
+
+### Visible AI watermark detection
+
+The provenance inspector also checks the four image corners for visible AI
+watermarks. It recognizes Chinese and English labels for 豆包/Seedream, 即梦,
+通义万相, 腾讯混元, DALL·E/ChatGPT, Google Imagen/Gemini, Midjourney, Adobe
+Firefly, Stable Diffusion, FLUX, Ideogram, Leonardo, Microsoft Designer/Bing,
+Meta AI, Canva, and generic “AI generated” marks. OCR uses the optional
+Tesseract executable when available; missing OCR support is reported as a
+degraded result rather than a failure.
+
+Watermark matches are included under each record's `watermark` field and are
+treated as medium-confidence, visible-evidence hints. They do not override a
+cryptographically valid C2PA camera or trained-media assertion, and a missing
+watermark does not prove that an image is real. To run this layer by itself:
+
+```bash
+uv run aigc-watermark \
+  --config configs/default.yaml \
+  --input /absolute/path/to/image-or-directory \
+  --output artifacts/watermark-report.json
+```
+
+Install Tesseract and Chinese language data for best results, or disable OCR
+explicitly with `--set watermark.ocr_enabled=false` when only the report schema
+is needed.
 The basic image properties `format`, `width`, `height`, and `pixel_count` are
 structural properties, not detailed EXIF, and do not increase the metadata
 confidence level.

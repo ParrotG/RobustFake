@@ -96,6 +96,7 @@ fake 的默认架构目标为 LatDiff 60%、GAN 15%、PixDiff 10%、other 15%。
 - `loss`：三类损失权重与温度。
 - `training`：epoch、micro-batch、梯度累积、DataLoader 预取、AMP、优化器和恢复路径。
 - `output`：运行产物目录和 checkpoint 策略。
+- `watermark`：可见水印 OCR 开关、Tesseract 路径、四角区域比例、缩放和超时。
 
 CLI 只额外支持 `--set section.key=value`。未知 section、未知 key、错误概率和不支持的 backbone 会在下载或加载权重前报错。
 
@@ -135,6 +136,8 @@ checkpoint 包含检测头、optimizer、scheduler、AMP scaler、epoch、global
 每轮在固定 seed 的验证增强上分别计算 clean/transformed 的 AUROC、Average Precision、Balanced Accuracy 和 F1，并以 clean/transformed AUROC 均值作为最佳模型指标。
 
 `metrics.jsonl` 的每条记录包含 schema version、UTC timestamp、session ID、epoch 和 global step，允许恢复训练后继续形成明确的时间序列。
+
+`aigc-provenance` 会在四角区域尝试识别豆包/Seedream、即梦、通义万相、腾讯混元及主流海外生成器的中英文水印；结果写入每条记录的 `watermark`，并在没有更高等级 C2PA 证据时以中等置信度参与 `authenticity_summary`。OCR 依赖外部 Tesseract，缺少该程序时只报告降级状态，不会使 provenance 检查失败。也可使用 `aigc-watermark` 只输出水印报告。可见水印不是签名，可能被裁剪、复制或后加，漏检也不能证明图片真实。
 
 ## 7. 复现与已知限制
 

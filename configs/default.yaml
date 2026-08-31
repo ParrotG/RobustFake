@@ -117,6 +117,16 @@ provenance:
   c2pa_ocsp_fetch: false
   c2pa_verify_trust: true
 
+watermark:
+  enabled: true
+  ocr_enabled: true
+  tesseract_path: null
+  ocr_timeout_seconds: 12.0
+  max_dimension: 1600
+  corner_fraction: 0.38
+  upscale_factor: 3
+  languages: eng+chi_sim
+
 perspective:
   max_dimension: 1600
   canny_low_threshold: 50
