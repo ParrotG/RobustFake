@@ -10,7 +10,7 @@ license: other
 
 # RobustFake
 
-[GitHub](https://github.com/ParrotG/RobustFake) · [Hugging Face Model](https://huggingface.co/Gin123/RobustFake)
+[GitHub](https://github.com/ParrotG/RobustFake) · [Hugging Face Model](https://huggingface.co/ParrotG/RobustFake)
 
 ## Problem and Solution
 
@@ -34,16 +34,32 @@ The implementation follows the supplied hackathon challenge specification. Detai
 
 ## Contents
 
-- [Model Design](#model-design)
-- [Dataset Design](#dataset-design)
-- [Training, Validation, and Calibration](#training-validation-and-calibration)
-- [Official Evaluation](#official-evaluation)
-- [Ablation Protocol](#ablation-protocol)
-- [Environment and Reproduction](#environment-and-reproduction)
-- [Robustness Evaluation Summary](#robustness-evaluation-summary)
-- [Error Analysis Note](#error-analysis-note)
-- [Limitation Reflection](#limitation-reflection)
-- [Team Contribution](#team-contribution)
+- [RobustFake](#robustfake)
+  - [Problem and Solution](#problem-and-solution)
+    - [Project Snapshot](#project-snapshot)
+  - [Contents](#contents)
+  - [Model Design](#model-design)
+    - [Frozen multi-layer visual representation](#frozen-multi-layer-visual-representation)
+    - [Training objective](#training-objective)
+  - [Dataset Design](#dataset-design)
+  - [Training, Validation, and Calibration](#training-validation-and-calibration)
+    - [Paired robustness augmentation](#paired-robustness-augmentation)
+    - [Optimisation profile](#optimisation-profile)
+    - [Validation and checkpoint selection](#validation-and-checkpoint-selection)
+    - [Global calibration](#global-calibration)
+  - [Official Evaluation](#official-evaluation)
+    - [External academic baselines](#external-academic-baselines)
+  - [Ablation Protocol](#ablation-protocol)
+  - [Environment and Reproduction](#environment-and-reproduction)
+    - [Environment requirements](#environment-requirements)
+    - [Installation](#installation)
+    - [Required directory-to-JSON inference](#required-directory-to-json-inference)
+    - [Evaluation with the Hugging Face model](#evaluation-with-the-hugging-face-model)
+    - [Training reproduction](#training-reproduction)
+  - [Robustness Evaluation Summary](#robustness-evaluation-summary)
+  - [Error Analysis Note](#error-analysis-note)
+  - [Limitation Reflection](#limitation-reflection)
+  - [Team Contribution](#team-contribution)
 
 ## Model Design
 
@@ -271,14 +287,14 @@ uv sync --extra dev
 
 All runtime settings are centralised in [configs/default.yaml](configs/default.yaml). Commands accept `--config` and repeated `--set section.key=value` overrides.
 
-The release endpoint is configured as [Gin123/RobustFake](https://huggingface.co/Gin123/RobustFake). After the maintainer uploads the release package, it provides the trainable checkpoint, its SHA-256-bound calibration, and the resolved training configuration, so users do not need to reproduce training before inference. A public repository does not require authentication for download.
+The release endpoint is configured as [ParrotG/RobustFake](https://huggingface.co/ParrotG/RobustFake). After the maintainer uploads the release package, it provides the trainable checkpoint, its SHA-256-bound calibration, and the resolved training configuration, so users do not need to reproduce training before inference. A public repository does not require authentication for download.
 
 To download the model package without running inference:
 
 ```bash
 uv run robustfake-download-model \
   --config configs/default.yaml \
-  --hf-repo Gin123/RobustFake
+  --hf-repo ParrotG/RobustFake
 ```
 
 ### Required directory-to-JSON inference
@@ -288,7 +304,7 @@ The challenge-required CLI recursively scores supported images and atomically wr
 ```bash
 uv run aigc-predict \
   --config configs/default.yaml \
-  --hf-repo Gin123/RobustFake \
+  --hf-repo ParrotG/RobustFake \
   --input-dir path/to/images \
   --output-json predictions.json
 ```
@@ -311,11 +327,11 @@ After preparing the official demonstration subset, run either the fast diagnosti
 uv run aigc-prepare-official-eval --config configs/default.yaml
 uv run aigc-evaluate-official \
   --config configs/default.yaml \
-  --hf-repo Gin123/RobustFake \
+  --hf-repo ParrotG/RobustFake \
   --fast
 uv run aigc-evaluate-official \
   --config configs/default.yaml \
-  --hf-repo Gin123/RobustFake
+  --hf-repo ParrotG/RobustFake
 ```
 
 ### Training reproduction
@@ -353,7 +369,32 @@ For a shorter diagnostic pass, append `--fast` to the evaluation command. Detail
 
 ## Robustness Evaluation Summary
 
-<!-- Reserved for the final submission summary. -->
+The complete release baseline was evaluated on all 13,841 official demonstration images under every scenario. The reported operating-point metrics use the single calibration fitted exclusively on the internal validation splits; no official labels were used for checkpoint selection, calibration, or threshold fitting.
+
+| Evaluation family | Tested settings | Mean AUROC | Worst AUROC (setting) | Lowest Balanced Accuracy |
+|---|---|---:|---:|---:|
+| Clean | No added degradation | 0.9792 | 0.9792 | 0.8898 |
+| JPEG recompression | Quality 90, 70, 50, 30 | 0.9714 | 0.9595 (`Q=50`) | 0.8373 |
+| Gaussian blur | Sigma 0.5, 1.0, 2.0 | 0.9623 | 0.9469 (`sigma=2.0`) | 0.8845 |
+| Resize | Scale 0.5, 0.25 | 0.9439 | 0.9432 (`scale=0.5`) | 0.8700 |
+| Gaussian noise | Sigma 0.02, 0.05, 0.10 | 0.9885 | 0.9838 (`sigma=0.10`) | 0.9395 |
+| Colour adjustment and crop | Jitter 20%, crop 80% | 0.9656 | 0.9656 (`jitter=20%`) | 0.8479 |
+| **All prescribed single transformations** | 14 scenarios | **0.9683** | **0.9432** (`scale=0.5`) | **0.8373** |
+| Additional composed stress tests | 6 ordered pipelines | 0.8968 | 0.8713 (`crop→resize→JPEG`) | 0.7746 |
+
+The mean prescribed-transformation AUROC is only 0.0109 below clean AUROC, and even the worst prescribed transformation remains above 0.94. Noise is handled particularly well; resizing and strong blur are the most difficult single-operation families. Ordered compositions create a larger distribution shift and should therefore be interpreted as a separate stress boundary rather than averaged into the challenge-prescribed result.
+
+Ranking robustness does not guarantee a uniformly safe operating point. The following cases expose the principal class-specific trade-offs:
+
+| Scenario | AUROC | Balanced Accuracy | Real recall | Fake recall | Interpretation |
+|---|---:|---:|---:|---:|---|
+| Clean | 0.9792 | 0.8898 | 0.9818 | 0.7978 | Strong real-image protection, with lower fake recall at the selected robust threshold |
+| Blur, `sigma=2.0` | 0.9469 | 0.8845 | 0.8824 | 0.8867 | The two class recalls remain balanced under the strongest blur |
+| Resize, `scale=0.25` | 0.9446 | 0.8784 | 0.8705 | 0.8864 | Severe downsampling reduces ranking but does not collapse either class recall |
+| Crop 80% | 0.9656 | 0.8479 | 0.9788 | 0.7170 | Ranking remains strong, but more generated images cross the real decision side |
+| Crop→blur→resize→JPEG stress | 0.9168 | 0.7746 | 0.6152 | 0.9340 | The largest observed false-positive shift under compounded degradation |
+
+For presentation, the clearest primary visual is a set of four severity curves for JPEG, blur, resize, and noise, with AUROC on a shared `0.90–1.00` axis and clean AUROC shown as a dashed reference. A second compact panel should compare `clean`, `mean prescribed single`, `worst prescribed single`, and `mean composed` AUROC without mixing composed tests into the official aggregate. Pair this with a real-versus-fake recall dumbbell for the five representative rows above; this makes the distinction between ranking robustness and threshold robustness visually explicit.
 
 ## Error Analysis Note
 
@@ -361,7 +402,15 @@ For a shorter diagnostic pass, append `--fast` to the evaluation command. Detail
 
 ## Limitation Reflection
 
-<!-- Reserved for the final limitation reflection and proposed future improvements. -->
+The mixed training and validation design broadens both authentic-image domains and generator families, but a complete leave-one-source-out study has not yet been run because of the available training time and compute budget. The held-out domains and generator architectures in `val_dg`, together with the external official evaluation, provide partial evidence of transfer to unseen conditions; they do not establish that performance will remain stable when every constituent dataset or source family is removed in turn. Source-level leave-one-out evaluation is therefore a priority for validating whether any part of the mixture remains disproportionately influential.
+
+RobustFake deliberately focuses on evidence available in decoded image pixels. Authenticity can also be assessed through provenance and acquisition signals such as C2PA manifests, EXIF fields, content credentials, and embedded watermark detectors such as SynthID. Some of these signals may survive transformations that weaken pixel-level forensic traces and can provide stronger positive provenance when present. However, the project primarily uses established datasets because collecting a legally and demographically representative sample of real Internet media was not feasible within the project scope. Such datasets are commonly re-encoded or otherwise preprocessed, and their metadata presence, removal patterns, and platform distribution may not reflect the open Internet. Adding these channels under those conditions could teach dataset provenance rather than media authenticity. A future system should instead fuse pixel evidence with independently validated provenance while treating missing or editable metadata as inconclusive.
+
+CLIP was selected as the visual backbone because its large-scale image-language pretraining offers broad semantic coverage, its intermediate transformer features retain information at several abstraction levels, and freezing it makes repeated robustness experiments feasible under the parameter and compute constraints. This choice is not evidence that CLIP is the optimal backbone for image forensics. Self-supervised encoders such as DINO-family models, other vision-language encoders such as SigLIP, convolutional architectures, and models pretrained specifically on forensic or frequency-domain objectives could provide useful controls or complementary evidence. Time constraints prevented a controlled backbone comparison.
+
+The official demonstration set is also narrower than a deployment environment: its clean subset contains one principal authentic source and one principal generator source, while the applied corruptions are deterministic simulations of redistribution. Real platforms introduce content-dependent resizing, repeated transcoding, screenshots, overlays, mixed editing histories, and changing generator distributions. The additional composed scenarios probe this gap, but they are not a substitute for longitudinal evaluation on naturally circulated media.
+
+Finally, the detector returns a binary probability rather than a provenance proof or generator attribution. The release results show that class ranking can remain strong while a fixed threshold becomes asymmetric under severe composed transformations. Calibration drift, adaptive post-processing, and newly released generators can therefore increase false accusations even when aggregate AUROC appears satisfactory. RobustFake should be used as one signal in a broader review process, with threshold monitoring, an abstention region for uncertain cases, and periodic recalibration on representative deployment data.
 
 ## Team Contribution
 
