@@ -256,7 +256,7 @@ evaluation:
   calibration_path: null
   calibration_threshold_strategy: constrained_minimax
   calibration_max_clean_ba_drop: 0.005
-  hf_model_repo_id: Gin123/RobustFake
+  hf_model_repo_id: ParrotG/RobustFake
   hf_model_revision: main
   hf_checkpoint_filename: best.pt
   hf_calibration_filename: calibration.json
