@@ -1,0 +1,4 @@
+name,path,dataset,evaluated_sample_count,clean_auroc,mean_single_transform_auroc,worst_single_transform_auroc
+RobustFake,artifacts/evaluations/wildfake_official/results.json,wildfake_official,13841,0.9792350164084631,0.9683476078594796,0.943203663914961
+CNNDetection,artifacts/evaluations/baselines/wildfake_official/cnndetection/results.json,wildfake_official,13841,0.6040858161652085,0.5974861786849762,0.5313726644112354
+UnivFD,artifacts/evaluations/baselines/wildfake_official/univfd/results.json,wildfake_official,13841,0.5897733853238232,0.5545874898318806,0.4023539303768551

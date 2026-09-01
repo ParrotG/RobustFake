@@ -1,0 +1,29 @@
+[
+  {
+    "clean_auroc": 0.9792350164084631,
+    "dataset": "wildfake_official",
+    "evaluated_sample_count": 13841,
+    "mean_single_transform_auroc": 0.9683476078594796,
+    "name": "RobustFake",
+    "path": "artifacts/evaluations/wildfake_official/results.json",
+    "worst_single_transform_auroc": 0.943203663914961
+  },
+  {
+    "clean_auroc": 0.6040858161652085,
+    "dataset": "wildfake_official",
+    "evaluated_sample_count": 13841,
+    "mean_single_transform_auroc": 0.5974861786849762,
+    "name": "CNNDetection",
+    "path": "artifacts/evaluations/baselines/wildfake_official/cnndetection/results.json",
+    "worst_single_transform_auroc": 0.5313726644112354
+  },
+  {
+    "clean_auroc": 0.5897733853238232,
+    "dataset": "wildfake_official",
+    "evaluated_sample_count": 13841,
+    "mean_single_transform_auroc": 0.5545874898318806,
+    "name": "UnivFD",
+    "path": "artifacts/evaluations/baselines/wildfake_official/univfd/results.json",
+    "worst_single_transform_auroc": 0.4023539303768551
+  }
+]

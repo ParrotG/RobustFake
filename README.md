@@ -253,6 +253,32 @@ uv run aigc-evaluate-baselines \
 
 Omit `--fast` for the complete single- and composed-transformation matrix. Use repeated `--baseline cnndetection` or `--baseline univfd` arguments to select individual baselines. Results and per-image predictions are written under `artifacts/evaluations/baselines/<dataset>/<baseline>/`; checkpoint-independent scenario scores are cached separately for repeatable presentation analysis.
 
+#### Completed full-matrix comparison
+
+All three detectors were evaluated on the same 13,841-image WildFake official demonstration set: 4,998 COCO val2017 authentic images and 8,843 DALL·E Advanced generated images. Every run contains the same record IDs and class counts for clean input, all 14 prescribed single transformations, and six additional composed stress tests. RobustFake uses its complete released inference pipeline; CNNDetection and UnivFD retain their pinned official checkpoints, 224-pixel preprocessing, and uncalibrated heads. Because no target-set calibration or retraining is applied to the public baselines, AUROC is the primary threshold-independent comparison.
+
+![RobustFake compared with CNNDetection and UnivFD across the complete prescribed robustness matrix](assets/baseline/robustness_comparison.svg)
+
+| Detector | Clean AUROC | Mean prescribed-transform AUROC | Worst prescribed-transform AUROC | Worst prescribed scenario |
+|---|---:|---:|---:|---|
+| **RobustFake** | **0.9792** | **0.9683** | **0.9432** | Resize 0.5× |
+| CNNDetection (CVPR 2020) | 0.6041 | 0.5975 | 0.5314 | Gaussian noise σ=0.10 |
+| UnivFD (CVPR 2023) | 0.5898 | 0.5546 | 0.4024 | Resize 0.25× |
+
+Relative to the stronger public baseline on each aggregate, RobustFake gains 37.5 AUROC points on clean input, 37.1 points on the mean prescribed transformation, and 41.2 points on the worst prescribed transformation. More importantly, its mean-to-worst decline is only 2.51 points, compared with 6.61 points for CNNDetection and 15.22 points for UnivFD. The per-scenario panel shows that this is not driven by one favorable corruption: RobustFake remains above 0.94 AUROC in every prescribed scenario, while the two public checkpoints are close to chance on several resizing, blur, and noise settings.
+
+The result supports the complete-system design rather than attributing the gap to calibration: affine calibration is monotonic and cannot improve AUROC ranking. RobustFake combines a broader leakage-audited training mixture, explicit clean/degraded pairing, global/local evidence, multi-layer CLIP fusion, and residual statistics. Conversely, the public checkpoints were trained for different generator distributions and are intentionally used without adaptation, so these numbers demonstrate transfer to this challenge setting rather than claiming that either published method is universally weak. Their fixed 0.5 thresholds predict almost every sample as authentic on this dataset; thresholded accuracy and recall are therefore retained only as domain-shift diagnostics, not used for the headline comparison.
+
+The checked summary and vector figure can be regenerated directly from the three full result files:
+
+```bash
+uv run robustfake-baseline-report \
+  --result RobustFake=artifacts/evaluations/wildfake_official/results.json \
+  --result CNNDetection=artifacts/evaluations/baselines/wildfake_official/cnndetection/results.json \
+  --result UnivFD=artifacts/evaluations/baselines/wildfake_official/univfd/results.json \
+  --output-dir assets/baseline
+```
+
 ### Ablation study results
 
 The ablation follows a strict leave-one-component-out design. Each trainable variant starts from the release configuration and removes exactly one component while retaining the same 80k manifest, split roles, seed, cached clean/degraded features, eight-epoch budget, optimiser, checkpoint-selection rule, and internal constrained-minimax calibration protocol. Every checkpoint is then evaluated on the complete official scenario matrix; the official labels are never used to select a checkpoint or fit a calibrator. The no-calibration row instead reuses the unchanged full checkpoint and only removes its post-hoc affine mapping and calibrated threshold.
