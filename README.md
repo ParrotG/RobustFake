@@ -39,6 +39,7 @@ RobustFake addresses this problem with a frozen CLIP ViT-B/16 visual encoder and
     - [Global calibration](#global-calibration)
   - [Official Evaluation](#official-evaluation)
     - [External academic baselines](#external-academic-baselines)
+    - [Ablation study results](#ablation-study-results)
   - [Ablation Protocol](#ablation-protocol)
   - [Environment and Reproduction](#environment-and-reproduction)
     - [Environment requirements](#environment-requirements)
@@ -252,9 +253,29 @@ uv run aigc-evaluate-baselines \
 
 Omit `--fast` for the complete single- and composed-transformation matrix. Use repeated `--baseline cnndetection` or `--baseline univfd` arguments to select individual baselines. Results and per-image predictions are written under `artifacts/evaluations/baselines/<dataset>/<baseline>/`; checkpoint-independent scenario scores are cached separately for repeatable presentation analysis.
 
+### Ablation study results
+
+The ablation follows a strict leave-one-component-out design. Each trainable variant starts from the release configuration and removes exactly one component while retaining the same 80k manifest, split roles, seed, cached clean/degraded features, eight-epoch budget, optimiser, checkpoint-selection rule, and internal constrained-minimax calibration protocol. Every checkpoint is then evaluated on the complete official scenario matrix; the official labels are never used to select a checkpoint or fit a calibrator. The no-calibration row instead reuses the unchanged full checkpoint and only removes its post-hoc affine mapping and calibrated threshold.
+
+![Grouped AUROC comparison for the RobustFake ablation study](assets/ablation/auroc_comparison.png)
+
+| Variant | Clean AUROC | Mean single AUROC | Worst single AUROC | Mean composed AUROC | Δ mean / worst single vs Full |
+|---|---:|---:|---:|---:|---:|
+| **Full RobustFake** | **0.9792** | **0.9683** | **0.9432** | **0.8968** | Reference |
+| Without residual statistics | 0.9624 | 0.9563 | 0.9060 | 0.8812 | −1.20 / −3.72 pp |
+| Without multi-layer fusion | 0.9582 | 0.9235 | 0.8317 | 0.8401 | −4.48 / −11.15 pp |
+| Without consistency loss | 0.9787 | 0.9676 | 0.9419 | 0.8925 | −0.08 / −0.13 pp |
+| Without contrastive loss | 0.9774 | 0.9659 | 0.9387 | 0.8890 | −0.25 / −0.45 pp |
+
+Multi-layer fusion provides the largest measured contribution: removing the intermediate transformer evidence reduces mean single-transform AUROC by 4.48 percentage points, worst-single AUROC by 11.15 points, and mean composed AUROC by 5.67 points. The residual-statistics branch is the second strongest component, with a particularly clear 3.72-point loss on the worst prescribed transformation. Together, these results support the central design claim that semantic final-layer features benefit from both intermediate representation levels and compact forensic statistics.
+
+The auxiliary objectives have smaller but directionally consistent effects in this single-seed study. Removing contrastive learning reduces every reported ranking aggregate, including mean composed AUROC by 0.79 points. Removing consistency changes mean and worst single-transform AUROC by only 0.08 and 0.13 points, while its larger 0.43-point effect on composed transformations provides limited evidence that it helps under accumulated degradation. These small differences should be reported as marginal contributions rather than statistical significance.
+
+Calibration is deliberately excluded from the AUROC chart because its positive affine mapping is monotonic and therefore leaves ranking effectively unchanged. Its contribution is operational: compared with the raw full checkpoint, robust calibration raises mean single-transform Balanced Accuracy from 0.8887 to 0.8939 and worst-single real recall from 0.6004 to 0.8705, while lowering clean Balanced Accuracy from 0.9278 to 0.8898. This exposes an explicit trade-off between protecting authentic images from false accusations under degradation and recovering more generated images on clean input; the detailed threshold analysis appears in [Error Analysis Note](#calibration-and-the-false-positive-trade-off).
+
 ## Ablation Protocol
 
-The core ablation suite starts from the final RobustFake configuration and independently removes residual statistics, multi-layer fusion, consistency loss, contrastive loss, or post-hoc calibration. All trainable ablations reuse the same frozen feature and residual caches, data split, seed, optimisation budget, checkpoint rule, and internal calibration protocol. The detailed commands, reporting rules, and presentation-ready SVG generator are documented in [docs/ABLATIONS.md](docs/ABLATIONS.md).
+The core ablation suite starts from the final RobustFake configuration and independently removes residual statistics, multi-layer fusion, consistency loss, contrastive loss, or post-hoc calibration. All trainable ablations reuse the same frozen feature and residual caches, data split, seed, optimisation budget, checkpoint rule, and internal calibration protocol. The detailed commands, reporting rules, and presentation-ready SVG/PNG generator are documented in [docs/ABLATIONS.md](docs/ABLATIONS.md).
 
 ## Environment and Reproduction
 

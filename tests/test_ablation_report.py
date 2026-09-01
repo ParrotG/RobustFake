@@ -29,7 +29,7 @@ def _result(path: Path, clean: float, transformed: float) -> None:
     path.write_text(json.dumps(payload), encoding="utf-8")
 
 
-def test_ablation_report_writes_machine_readable_and_svg_outputs(tmp_path: Path) -> None:
+def test_ablation_report_writes_machine_readable_and_chart_outputs(tmp_path: Path) -> None:
     full = tmp_path / "full.json"
     removal = tmp_path / "removal.json"
     _result(full, 0.95, 0.90)
@@ -43,5 +43,7 @@ def test_ablation_report_writes_machine_readable_and_svg_outputs(tmp_path: Path)
     assert (tmp_path / "report" / "summary.json").is_file()
     assert (tmp_path / "report" / "summary.csv").is_file()
     svg = (tmp_path / "report" / "auroc_comparison.svg").read_text(encoding="utf-8")
-    assert "RobustFake ablation AUROC" in svg
+    assert "Leave-one-component-out robustness" in svg
     assert "Without method" in svg
+    png = tmp_path / "report" / "auroc_comparison.png"
+    assert png.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")

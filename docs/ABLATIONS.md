@@ -119,7 +119,7 @@ uv run aigc-evaluate-official \
 
 ## 5. 自动汇总与可视化
 
-评测后用以下命令生成 `summary.json`、`summary.csv` 和可直接放入 PPT 的 `auroc_comparison.svg`。第一个 `--result` 必须是 Full，后续顺序保持与汇报图例一致：
+评测后用以下命令生成 `summary.json`、`summary.csv`、可编辑的 `auroc_comparison.svg` 和可直接放入 README/PPT 的高分辨率 `auroc_comparison.png`。第一个 `--result` 必须是 Full，后续顺序保持与汇报图例一致：
 
 ```bash
 uv run robustfake-ablation-report \

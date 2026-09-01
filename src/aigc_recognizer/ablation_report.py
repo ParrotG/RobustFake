@@ -6,9 +6,20 @@ import argparse
 import csv
 import html
 import json
+import math
 from pathlib import Path
 from statistics import mean
 from typing import Any
+
+from PIL import Image, ImageDraw, ImageFont
+
+
+_CHART_METRICS = [
+    ("clean_auroc", "Clean", "#2563EB"),
+    ("mean_single_auroc", "Mean single", "#16A34A"),
+    ("worst_single_auroc", "Worst single", "#F59E0B"),
+    ("mean_composed_auroc", "Mean composed", "#8B5CF6"),
+]
 
 
 def _parse_result(value: str) -> tuple[str, Path]:
@@ -55,65 +66,241 @@ def _summary(name: str, path: Path) -> dict[str, Any]:
     }
 
 
-def _bar_svg(rows: list[dict[str, Any]], destination: Path) -> None:
-    """Write a dependency-free grouped AUROC bar chart suitable for slides."""
-    metrics = [
-        ("clean_auroc", "Clean"),
-        ("mean_single_auroc", "Mean transformed"),
-        ("worst_single_auroc", "Worst transformed"),
-        ("mean_composed_auroc", "Mean composed"),
+def _chart_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep ranking ablations in the AUROC chart and separate calibration."""
+    ranking_rows = [row for row in rows if row["calibration_applied"]]
+    return ranking_rows or rows
+
+
+def _display_name(name: str) -> str:
+    aliases = {
+        "NoResidual": "No residual",
+        "NoMultilayer": "No multi-layer",
+        "NoConsistency": "No consistency",
+        "NoContrastive": "No contrastive",
+        "NoCalibration": "No calibration",
+    }
+    return aliases.get(name, name)
+
+
+def _chart_scale(rows: list[dict[str, Any]]) -> tuple[float, float]:
+    values = [
+        float(row[key])
+        for row in rows
+        for key, _label, _color in _CHART_METRICS
+        if row[key] is not None
     ]
-    metrics = [item for item in metrics if any(row[item[0]] is not None for row in rows)]
-    width = 960
-    left = 190
-    top = 70
-    bar_height = max(12, min(24, 60 // max(1, len(rows))))
-    group_height = 34 + len(rows) * bar_height
-    height = top + group_height * len(metrics) + 70
-    chart_width = width - left - 70
-    colors = ["#2563EB", "#F97316", "#16A34A", "#9333EA", "#DC2626", "#0891B2"]
+    lower = max(0.0, math.floor((min(values) - 0.01) / 0.05) * 0.05)
+    return lower, 1.0
+
+
+def _bar_svg(rows: list[dict[str, Any]], destination: Path) -> None:
+    """Write a vertical grouped AUROC chart suitable for slides."""
+    rows = _chart_rows(rows)
+    width = 1500
+    height = 900
+    left, right, top, bottom = 105, 45, 175, 190
+    chart_width = width - left - right
+    chart_height = height - top - bottom
+    y_min, y_max = _chart_scale(rows)
+    group_width = chart_width / len(rows)
+    bar_width = min(42.0, group_width / (len(_CHART_METRICS) + 1.5))
+
+    def y_position(value: float) -> float:
+        return top + (y_max - value) / (y_max - y_min) * chart_height
+
     elements = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
         f'viewBox="0 0 {width} {height}">',
         '<rect width="100%" height="100%" fill="white"/>',
-        '<text x="30" y="36" font-family="sans-serif" font-size="24" '
-        'font-weight="700">RobustFake ablation AUROC</text>',
+        '<text x="105" y="54" font-family="sans-serif" font-size="32" '
+        'font-weight="700" fill="#111827">Leave-one-component-out robustness</text>',
+        f'<text x="105" y="86" font-family="sans-serif" font-size="17" fill="#4B5563">'
+        f'Full official matrix · grouped by model variant · AUROC axis starts at {y_min:.2f}</text>',
     ]
-    for tick in range(0, 11):
-        value = tick / 10
-        x = left + value * chart_width
+
+    legend_x = 105
+    for _key, label, color in _CHART_METRICS:
         elements.append(
-            f'<line x1="{x:.1f}" y1="52" x2="{x:.1f}" y2="{height - 45}" '
-            'stroke="#E5E7EB" stroke-width="1"/>'
+            f'<rect x="{legend_x}" y="112" width="18" height="18" rx="3" fill="{color}"/>'
         )
         elements.append(
-            f'<text x="{x:.1f}" y="{height - 22}" text-anchor="middle" '
-            f'font-family="sans-serif" font-size="12" fill="#4B5563">{value:.1f}</text>'
+            f'<text x="{legend_x + 27}" y="127" font-family="sans-serif" '
+            f'font-size="15" fill="#374151">{html.escape(label)}</text>'
         )
-    for metric_index, (key, label) in enumerate(metrics):
-        base_y = top + metric_index * group_height
+        legend_x += 150
+
+    tick = math.ceil(y_min / 0.05) * 0.05
+    while tick <= y_max + 1e-9:
+        y = y_position(tick)
         elements.append(
-            f'<text x="{left - 14}" y="{base_y + 18}" text-anchor="end" '
-            f'font-family="sans-serif" font-size="15" font-weight="600">{html.escape(label)}</text>'
+            f'<line x1="{left}" y1="{y:.1f}" x2="{width - right}" y2="{y:.1f}" '
+            'stroke="#D1D5DB" stroke-width="1"/>'
         )
-        for row_index, row in enumerate(rows):
+        elements.append(
+            f'<text x="{left - 15}" y="{y + 6:.1f}" text-anchor="end" '
+            f'font-family="sans-serif" font-size="15" fill="#4B5563">{tick:.2f}</text>'
+        )
+        tick += 0.05
+
+    baseline = rows[0]
+    for row_index, row in enumerate(rows):
+        group_left = left + row_index * group_width
+        center = group_left + group_width / 2
+        if row_index == 0:
+            elements.append(
+                f'<rect x="{group_left + 8:.1f}" y="{top}" width="{group_width - 16:.1f}" '
+                f'height="{chart_height}" fill="#EFF6FF" rx="8"/>'
+            )
+        bars_width = len(_CHART_METRICS) * bar_width
+        bars_left = center - bars_width / 2
+        for metric_index, (key, _label, color) in enumerate(_CHART_METRICS):
             value = row[key]
             if value is None:
                 continue
-            y = base_y + 26 + row_index * bar_height
-            bar_width = float(value) * chart_width
-            color = colors[row_index % len(colors)]
+            x = bars_left + metric_index * bar_width
+            y = y_position(float(value))
+            rendered_height = top + chart_height - y
             elements.append(
-                f'<rect x="{left}" y="{y}" width="{bar_width:.1f}" height="{bar_height - 3}" '
-                f'fill="{color}" rx="2"/>'
+                f'<rect x="{x + 2:.1f}" y="{y:.1f}" width="{bar_width - 4:.1f}" '
+                f'height="{rendered_height:.1f}" fill="{color}" rx="4"/>'
             )
             elements.append(
-                f'<text x="{left + bar_width + 7:.1f}" y="{y + bar_height - 7}" '
-                f'font-family="sans-serif" font-size="12">{float(value):.4f} '
-                f'{html.escape(str(row["name"]))}</text>'
+                f'<text x="{x + bar_width / 2:.1f}" y="{y - 8:.1f}" text-anchor="middle" '
+                f'font-family="sans-serif" font-size="12" font-weight="600" '
+                f'fill="#374151">{float(value):.3f}</text>'
             )
+        label = html.escape(_display_name(str(row["name"])))
+        elements.append(
+            f'<text x="{center:.1f}" y="{top + chart_height + 35}" text-anchor="middle" '
+            f'font-family="sans-serif" font-size="17" font-weight="600" fill="#111827">{label}</text>'
+        )
+        if row_index == 0:
+            delta_label = "Reference"
+        else:
+            delta = 100.0 * (
+                float(row["worst_single_auroc"])
+                - float(baseline["worst_single_auroc"])
+            )
+            delta_label = f"Δ worst single {delta:+.1f} pp"
+        elements.append(
+            f'<text x="{center:.1f}" y="{top + chart_height + 62}" text-anchor="middle" '
+            f'font-family="sans-serif" font-size="14" fill="#6B7280">{delta_label}</text>'
+        )
+
+    elements.append(
+        f'<text x="{left}" y="{height - 38}" font-family="sans-serif" font-size="14" '
+        'fill="#6B7280">Calibration ablation is reported separately because monotonic calibration does not change AUROC ranking.</text>'
+    )
     elements.append("</svg>")
     destination.write_text("\n".join(elements) + "\n", encoding="utf-8")
+
+
+def _font(size: int, *, bold: bool = False) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    path = Path(
+        "/usr/share/fonts/truetype/dejavu/"
+        + ("DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf")
+    )
+    if path.is_file():
+        return ImageFont.truetype(str(path), size=size)
+    return ImageFont.load_default()
+
+
+def _bar_png(rows: list[dict[str, Any]], destination: Path) -> None:
+    """Write a high-resolution PNG counterpart of the grouped SVG chart."""
+    rows = _chart_rows(rows)
+    width, height = 1800, 1080
+    left, right, top, bottom = 130, 55, 215, 230
+    chart_width = width - left - right
+    chart_height = height - top - bottom
+    y_min, y_max = _chart_scale(rows)
+    group_width = chart_width / len(rows)
+    bar_width = min(52.0, group_width / (len(_CHART_METRICS) + 1.5))
+    image = Image.new("RGB", (width, height), "white")
+    draw = ImageDraw.Draw(image)
+
+    def y_position(value: float) -> float:
+        return top + (y_max - value) / (y_max - y_min) * chart_height
+
+    draw.text((left, 50), "Leave-one-component-out robustness", font=_font(39, bold=True), fill="#111827")
+    draw.text(
+        (left, 105),
+        f"Full official matrix · grouped by model variant · AUROC axis starts at {y_min:.2f}",
+        font=_font(21),
+        fill="#4B5563",
+    )
+    legend_x = left
+    for _key, label, color in _CHART_METRICS:
+        draw.rounded_rectangle((legend_x, 155, legend_x + 23, 178), radius=4, fill=color)
+        draw.text((legend_x + 34, 151), label, font=_font(18), fill="#374151")
+        legend_x += 190
+
+    tick = math.ceil(y_min / 0.05) * 0.05
+    while tick <= y_max + 1e-9:
+        y = y_position(tick)
+        draw.line((left, y, width - right, y), fill="#D1D5DB", width=2)
+        label = f"{tick:.2f}"
+        box = draw.textbbox((0, 0), label, font=_font(17))
+        draw.text((left - 18 - (box[2] - box[0]), y - 10), label, font=_font(17), fill="#4B5563")
+        tick += 0.05
+
+    baseline = rows[0]
+    for row_index, row in enumerate(rows):
+        group_left = left + row_index * group_width
+        center = group_left + group_width / 2
+        if row_index == 0:
+            draw.rounded_rectangle(
+                (group_left + 10, top, group_left + group_width - 10, top + chart_height),
+                radius=10,
+                fill="#EFF6FF",
+            )
+        bars_width = len(_CHART_METRICS) * bar_width
+        bars_left = center - bars_width / 2
+        for metric_index, (key, _label, color) in enumerate(_CHART_METRICS):
+            value = row[key]
+            if value is None:
+                continue
+            x = bars_left + metric_index * bar_width
+            y = y_position(float(value))
+            draw.rounded_rectangle(
+                (x + 3, y, x + bar_width - 3, top + chart_height),
+                radius=5,
+                fill=color,
+            )
+            value_label = f"{float(value):.3f}"
+            box = draw.textbbox((0, 0), value_label, font=_font(14, bold=True))
+            draw.text(
+                (x + bar_width / 2 - (box[2] - box[0]) / 2, y - 23),
+                value_label,
+                font=_font(14, bold=True),
+                fill="#374151",
+            )
+        display_name = _display_name(str(row["name"]))
+        box = draw.textbbox((0, 0), display_name, font=_font(20, bold=True))
+        draw.text(
+            (center - (box[2] - box[0]) / 2, top + chart_height + 35),
+            display_name,
+            font=_font(20, bold=True),
+            fill="#111827",
+        )
+        delta_label = "Reference" if row_index == 0 else (
+            "Δ worst single "
+            f"{100.0 * (float(row['worst_single_auroc']) - float(baseline['worst_single_auroc'])):+.1f} pp"
+        )
+        box = draw.textbbox((0, 0), delta_label, font=_font(16))
+        draw.text(
+            (center - (box[2] - box[0]) / 2, top + chart_height + 72),
+            delta_label,
+            font=_font(16),
+            fill="#6B7280",
+        )
+    draw.text(
+        (left, height - 48),
+        "Calibration ablation is reported separately because monotonic calibration does not change AUROC ranking.",
+        font=_font(16),
+        fill="#6B7280",
+    )
+    image.save(destination, format="PNG", optimize=True)
 
 
 def build_report(results: list[tuple[str, Path]], output_directory: Path) -> list[dict[str, Any]]:
@@ -134,6 +321,7 @@ def build_report(results: list[tuple[str, Path]], output_directory: Path) -> lis
         writer.writeheader()
         writer.writerows(rows)
     _bar_svg(rows, output_directory / "auroc_comparison.svg")
+    _bar_png(rows, output_directory / "auroc_comparison.png")
     return rows
 
 
