@@ -1,12 +1,3 @@
----
-library_name: pytorch
-pipeline_tag: image-classification
-tags:
-  - ai-generated-image-detection
-  - image-forensics
-  - robust-classification
-license: other
----
 
 # RobustFake
 
@@ -30,7 +21,6 @@ RobustFake addresses this problem with a frozen CLIP ViT-B/16 visual encoder and
 | Scale | 80,000 prepared images; 64k train, 8k ID validation, 8k domain-generalisation validation |
 | Compute profile | Frozen backbone; fewer than 5M trainable parameters; approximately 8–12GB NVIDIA GPU memory recommended |
 
-The implementation follows the supplied hackathon challenge specification. Detailed acquisition, compliance, engineering, and recovery behavior is documented in [docs/PROJECT.md](docs/PROJECT.md).
 
 ## Contents
 
