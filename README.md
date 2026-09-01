@@ -39,6 +39,7 @@ RobustFake addresses this problem with a frozen CLIP ViT-B/16 visual encoder and
     - [Global calibration](#global-calibration)
   - [Official Evaluation](#official-evaluation)
     - [External academic baselines](#external-academic-baselines)
+      - [Completed full-matrix comparison](#completed-full-matrix-comparison)
     - [Ablation study results](#ablation-study-results)
   - [Ablation Protocol](#ablation-protocol)
   - [Environment and Reproduction](#environment-and-reproduction)
@@ -51,6 +52,7 @@ RobustFake addresses this problem with a frozen CLIP ViT-B/16 visual encoder and
     - [Ablation reproduction](#ablation-reproduction)
   - [Robustness Evaluation Summary](#robustness-evaluation-summary)
   - [Error Analysis Note](#error-analysis-note)
+    - [Calibration and the false-positive trade-off](#calibration-and-the-false-positive-trade-off)
   - [Limitation Reflection](#limitation-reflection)
   - [Team Contribution](#team-contribution)
 
@@ -70,6 +72,8 @@ For each view, the detector extracts the final 512-dimensional projected CLIP em
 The fused global and local embeddings are aggregated with their mean and standard deviation. The mean represents evidence shared by both views; the standard deviation exposes disagreement between global context and local detail. This aggregation is invariant to view ordering.
 
 The residual-statistics branch, enabled by default, computes 24 fixed high-pass statistics per view from directional residuals, channel-wise Laplacians, and horizontal/vertical pixel differences. Its view-wise mean and standard deviation pass through a small MLP and are concatenated with the CLIP aggregate. This gives the detector direct access to compact forensic evidence while leaving the CLIP backbone frozen.
+
+![RobustFake Architecture](assets/RobostFakeArchitecture.png)
 
 ```mermaid
 flowchart TD
