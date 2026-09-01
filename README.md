@@ -404,4 +404,12 @@ Finally, the detector returns a binary probability rather than a provenance proo
 
 ## Team Contribution
 
-<!-- Reserved for team member contributions. -->
+| Team member | Contribution |
+|---|---|
+| **Gu Shucheng** | Led the model design and construction of the mixed training dataset. Designed the frozen CLIP multi-layer detector, global/local view aggregation, residual-statistics branch, and paired robustness objectives; developed the source-balanced mixture, domain-generalisation split, and generator/domain holdout strategy; coordinated training, hyperparameter refinement, calibration, and final system integration. |
+| **Youlong Xu** | Contributed to the data preparation and quality-control workflow, including source acquisition, image validation and standardisation, bucket-level sampling support, duplicate and leakage checks, and review of dataset diversity and representativeness. |
+| **Ruicheng Li** | Contributed to robustness experimentation and evaluation, including degradation settings, validation protocols, official and external evaluation workflows, metric interpretation, and analysis of class-specific errors under severe transformations. |
+| **Hanson Yu** | Contributed to reproducibility and software engineering, including configuration and checkpoint workflows, command-line inference, cache-aware execution, testing, and review of installation and reproduction instructions. |
+| **Hantong Hong** | Contributed to experimental reporting and presentation, including academic baseline and ablation planning, result aggregation, robustness visualisation, error-analysis organisation, documentation review. |
+
+All team members participated in design discussions, result review, and final presentation preparation.
