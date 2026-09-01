@@ -9,6 +9,8 @@ Generative image systems can produce realistic synthetic media at scale, while o
 
 RobustFake addresses this problem with a frozen CLIP ViT-B/16 visual encoder and a compact trainable forensic head. It combines global context with local evidence, fuses semantic and intermediate transformer representations, incorporates fixed residual statistics, and trains on paired clean/degraded views whose spatial geometry is shared. A diverse, leakage-audited training pool and separate in-distribution/domain-generalisation validation roles reduce dependence on a single generator or real-image source. Post-training affine calibration corrects global confidence bias without changing the detector ranking or using the official demonstration set for fitting.
 
+![A generated image that UnivFD detects when clean but misses after resizing, while RobustFake remains correct](assets/baseline-examples/univfd-transform-flip.png)
+
 ### Project Snapshot
 
 | Category | Selection |

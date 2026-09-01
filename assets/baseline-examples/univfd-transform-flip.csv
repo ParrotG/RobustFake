@@ -1,0 +1,3 @@
+record_id,ground_truth,scenario,model,threshold,clean_score,transformed_score,clean_correct,transformed_correct
+79e97b6afe9816b0f579f601cd458eeb3b182d428c4a9c5f01627aabf4f0f8ce,AI-generated,resize_0.25,UnivFD,0.5,0.9519526958465576,0.12710987031459808,True,False
+79e97b6afe9816b0f579f601cd458eeb3b182d428c4a9c5f01627aabf4f0f8ce,AI-generated,resize_0.25,RobustFake,0.5664157562145263,0.9930369257926941,0.9916226267814636,True,True
