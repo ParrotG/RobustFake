@@ -417,16 +417,16 @@ uv run aigc-download-baselines \
   --config configs/default.yaml
 ```
 
-After preparing SID-Set, evaluate a selected detector on the same manifest-backed pipeline:
+After preparing the official demonstration set, evaluate a selected detector on the same manifest-backed pipeline:
 
 ```bash
 uv run aigc-evaluate-baselines \
   --config configs/default.yaml \
-  --dataset sid_set \
+  --dataset wildfake_official \
   --baseline cnndetection
 ```
 
-Replace `sid_set` with `wildfake_official`, or `cnndetection` with `univfd`, to reproduce the other configured comparisons. Add `--fast` for the deterministic diagnostic subset where supported.
+Replace `cnndetection` with `univfd` to reproduce the other published baseline comparison. Add `--fast` for the deterministic diagnostic subset where supported.
 
 ### Ablation reproduction
 
