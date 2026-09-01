@@ -1,0 +1,27 @@
+{
+  "clean_preview": "assets/baseline-examples/univfd-flip-clean.jpg",
+  "ground_truth": "AI-generated",
+  "image_path": "images/fake/79e97b6afe9816b0f579f601cd458eeb3b182d428c4a9c5f01627aabf4f0f8ce.jpg",
+  "label": 1,
+  "models": {
+    "RobustFake": {
+      "clean_correct": true,
+      "clean_score": 0.9930369257926941,
+      "threshold": 0.5664157562145263,
+      "transformed_correct": true,
+      "transformed_score": 0.9916226267814636
+    },
+    "UnivFD": {
+      "clean_correct": true,
+      "clean_score": 0.9519526958465576,
+      "threshold": 0.5,
+      "transformed_correct": false,
+      "transformed_score": 0.12710987031459808
+    }
+  },
+  "preview_protocol": "Canonical RGB followed by the deterministic shared resize scenario. RobustFake additionally applies its label-independent standardization and views.",
+  "record_id": "79e97b6afe9816b0f579f601cd458eeb3b182d428c4a9c5f01627aabf4f0f8ce",
+  "scenario": "resize_0.25",
+  "scenario_label": "Resize to 25%, then upscale",
+  "transformed_preview": "assets/baseline-examples/univfd-flip-transformed.jpg"
+}

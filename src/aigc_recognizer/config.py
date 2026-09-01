@@ -408,7 +408,7 @@ class EvaluationConfig:
     calibration_path: str | None = None
     calibration_threshold_strategy: str = "constrained_minimax"
     calibration_max_clean_ba_drop: float = 0.005
-    hf_model_repo_id: str | None = "Gin123/RobustFake"
+    hf_model_repo_id: str | None = "ParrotG/RobustFake"
     hf_model_revision: str = "main"
     hf_checkpoint_filename: str = "best.pt"
     hf_calibration_filename: str = "calibration.json"

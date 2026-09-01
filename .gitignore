@@ -19,7 +19,5 @@ wheels/
 .pytest_cache/
 .coverage
 
-# Keep the supplied challenge document local while tracking the project guide.
-docs/*
-!docs/PROJECT.md
-!docs/ABLATIONS.md
+# Local challenge materials and development-process notes.
+/docs/

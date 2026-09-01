@@ -1,6 +1,7 @@
 
 # RobustFake
 
+TikTok TechJam 2026
 [GitHub](https://github.com/ParrotG/RobustFake) · [Hugging Face Model](https://huggingface.co/ParrotG/RobustFake)
 
 ## Problem and Solution
@@ -8,6 +9,8 @@
 Generative image systems can produce realistic synthetic media at scale, while ordinary redistribution operations—JPEG recompression, blur, resizing, noise, colour adjustment, and cropping—can erase or alter the traces used by image-forensics detectors. The challenge is therefore not merely to separate clean AI-generated and authentic images, but to preserve reliable ranking and control false positives after content has passed through realistic sharing pipelines. The detector must also remain practical at hackathon scale and stay below the 2-billion-parameter limit.
 
 RobustFake addresses this problem with a frozen CLIP ViT-B/16 visual encoder and a compact trainable forensic head. It combines global context with local evidence, fuses semantic and intermediate transformer representations, incorporates fixed residual statistics, and trains on paired clean/degraded views whose spatial geometry is shared. A diverse, leakage-audited training pool and separate in-distribution/domain-generalisation validation roles reduce dependence on a single generator or real-image source. Post-training affine calibration corrects global confidence bias without changing the detector ranking or using the official demonstration set for fitting.
+
+![A generated image that UnivFD detects when clean but misses after resizing, while RobustFake remains correct](assets/baseline-examples/univfd-transform-flip.png)
 
 ### Project Snapshot
 
@@ -39,6 +42,7 @@ RobustFake addresses this problem with a frozen CLIP ViT-B/16 visual encoder and
     - [Global calibration](#global-calibration)
   - [Official Evaluation](#official-evaluation)
     - [External academic baselines](#external-academic-baselines)
+      - [Completed full-matrix comparison](#completed-full-matrix-comparison)
     - [Ablation study results](#ablation-study-results)
   - [Ablation Protocol](#ablation-protocol)
   - [Environment and Reproduction](#environment-and-reproduction)
@@ -47,8 +51,11 @@ RobustFake addresses this problem with a frozen CLIP ViT-B/16 visual encoder and
     - [Required directory-to-JSON inference](#required-directory-to-json-inference)
     - [Evaluation with the Hugging Face model](#evaluation-with-the-hugging-face-model)
     - [Training reproduction](#training-reproduction)
+    - [External baseline reproduction](#external-baseline-reproduction)
+    - [Ablation reproduction](#ablation-reproduction)
   - [Robustness Evaluation Summary](#robustness-evaluation-summary)
   - [Error Analysis Note](#error-analysis-note)
+    - [Calibration and the false-positive trade-off](#calibration-and-the-false-positive-trade-off)
   - [Limitation Reflection](#limitation-reflection)
   - [Team Contribution](#team-contribution)
 
@@ -69,40 +76,8 @@ The fused global and local embeddings are aggregated with their mean and standar
 
 The residual-statistics branch, enabled by default, computes 24 fixed high-pass statistics per view from directional residuals, channel-wise Laplacians, and horizontal/vertical pixel differences. Its view-wise mean and standard deviation pass through a small MLP and are concatenated with the CLIP aggregate. This gives the detector direct access to compact forensic evidence while leaving the CLIP backbone frozen.
 
-```mermaid
-flowchart TD
-    A[Original encoded image] --> B[EXIF orientation, RGB conversion, label-independent standardization]
-    B --> C[Shared crop geometry]
-    C --> D1[Clean global view]
-    C --> D2[Clean local view]
-    B --> E[Redistribution degradation]
-    E --> F1[Degraded global view using shared geometry]
-    E --> F2[Degraded local view using shared geometry]
+![RobustFake Architecture](assets/RobostFakeArchitecture.png)
 
-    D1 --> G[Frozen CLIP ViT-B/16]
-    D2 --> G
-    F1 --> G
-    F2 --> G
-
-    G --> H1[Final projected embedding]
-    G --> H2[CLS tokens from blocks 4, 7, 10, and 12]
-    H2 --> I[Trainable 512-d projections]
-    H1 --> J[Sample-dependent softmax layer gate]
-    I --> J
-    J --> K[View mean and standard deviation]
-
-    D1 --> R[Fixed residual statistics]
-    D2 --> R
-    F1 --> R
-    F2 --> R
-    R --> S[Residual mean and standard deviation plus MLP]
-
-    K --> L[Feature concatenation]
-    S --> L
-    L --> M[LayerNorm, Linear, GELU, Dropout]
-    M --> N[Binary AIGC logit]
-    M --> P[Training-only projection head]
-```
 
 At inference time, only one clean global/local pair is required. The clean/degraded branches shown above are paired training views.
 
@@ -126,12 +101,14 @@ The final feature head is `LayerNorm → Linear → GELU → Dropout`, followed 
 
 The training pool is designed to represent variation along two different axes: how authentic images are acquired and what type of generator produces synthetic images. Authentic content includes photographic, web-scale, face, landscape, and ImageNet/COCO-like sources. Synthetic content spans diffusion, GAN, autoregressive/other families, general-purpose generators, fine-tuned community models, and multiple generation resolutions. This diversity is intended to make the decision boundary less dependent on one benchmark's content style or one generator family.
 
-| Source | Role in the mixture |
-|---|---|
-| Shanmuk paired set | Provides controlled real/generated pairs and modern diffusion coverage |
-| WildFake train split | Broadens real domains and introduces multiple generator families and architectures |
-| Community Forensics-Small | Adds large-scale community fine-tunes, commercial systems, and heterogeneous web content |
-| Tiny-GenImage | Adds compact coverage of established GAN and diffusion benchmarks |
+| Dataset source | Authentic-image sources represented in the selected pool | AIGC generator categories and models represented in the selected pool |
+|---|---|---|
+| Shanmuk paired set | COCO and ImageNet parent images | Modern diffusion-family generators: Stable Diffusion 1.5, SDXL, FLUX.1-schnell, Kandinsky 2.2, PixArt-Σ, and Würstchen |
+| WildFake train split | LAION-5B, ImageNet, FFHQ, CelebA-HQ, AFHQ, and Church | Diffusion models including ADM, VQDM, DDPM, DDIM, and Imagen; GAN-family models including BigGAN, StyleGAN, StarGAN, DF-GAN, GALIP, and GigaGAN; other token/autoencoding architectures including VQ-VAE, VQGAN, and MAE |
+| Community Forensics-Small | COCO, FFHQ, LandscapesHQ, and VISION camera images | Latent-diffusion, pixel-diffusion, GAN, and other families; systematic models include ProGAN, BigGAN, GigaGAN, StyleGAN variants, ProjectedGAN, GLIDE, DeepFloyd, VQDiffusion, Taming Transformers, and LFM, supplemented by many community fine-tunes and LoRAs |
+| Tiny-GenImage | ImageNet images | Diffusion and related generators ADM, GLIDE, Midjourney, VQDM, Stable Diffusion 1.5, and Wukong, plus the GAN-family BigGAN |
+
+The entries above describe models and authentic origins that are actually present in the final 80,000-record manifest, rather than every category advertised by each upstream repository. In particular, the pinned Tiny-GenImage revision contains no physical SD1.4 records, so that declared class is not presented as observed coverage.
 
 The physical pool contains 40,000 real and 40,000 generated images. Source quotas prevent a large repository from replacing the intended mixture. Within each quota, real samples are bucketed by acquisition/content source and generated samples by family, architecture, and model. Square-root allocation gives larger domains more examples while reducing their ability to dominate and avoiding excessive oversampling of very small buckets.
 
@@ -314,7 +291,7 @@ Calibration is deliberately excluded from the AUROC chart because its positive a
 
 ## Ablation Protocol
 
-The core ablation suite starts from the final RobustFake configuration and independently removes residual statistics, multi-layer fusion, consistency loss, contrastive loss, or post-hoc calibration. All trainable ablations reuse the same frozen feature and residual caches, data split, seed, optimisation budget, checkpoint rule, and internal calibration protocol. The detailed commands, reporting rules, and presentation-ready SVG/PNG generator are documented in [docs/ABLATIONS.md](docs/ABLATIONS.md).
+The core ablation suite starts from the final RobustFake configuration and independently removes residual statistics, multi-layer fusion, consistency loss, contrastive loss, or post-hoc calibration. All trainable ablations reuse the same frozen feature and residual caches, data split, seed, optimisation budget, checkpoint rule, and internal calibration protocol. Exact training, evaluation, and report-generation commands are included in [Ablation reproduction](#ablation-reproduction).
 
 ## Environment and Reproduction
 
@@ -337,7 +314,7 @@ uv sync --extra dev
 
 All runtime settings are centralised in [configs/default.yaml](configs/default.yaml). Commands accept `--config` and repeated `--set section.key=value` overrides.
 
-The release endpoint is configured as [ParrotG/RobustFake](https://huggingface.co/ParrotG/RobustFake). After the maintainer uploads the release package, it provides the trainable checkpoint, its SHA-256-bound calibration, and the resolved training configuration, so users do not need to reproduce training before inference. A public repository does not require authentication for download.
+The release package is published at [ParrotG/RobustFake](https://huggingface.co/ParrotG/RobustFake). It provides the trainable checkpoint, its SHA-256-bound calibration, and the resolved training configuration, so users do not need to reproduce training before inference. A public repository does not require authentication for download.
 
 To download the model package without running inference:
 
@@ -386,7 +363,7 @@ uv run aigc-evaluate-official \
 
 ### Training reproduction
 
-Prepare the official protected manifest, complete the configured leakage-deny manifests as documented in [docs/PROJECT.md](docs/PROJECT.md), then prepare the mixed dataset:
+Prepare the official protected manifest and all configured external leakage-deny manifests before constructing the mixed dataset:
 
 ```bash
 uv run aigc-prepare-official-eval --config configs/default.yaml
@@ -415,7 +392,96 @@ uv run aigc-evaluate-official \
   --set evaluation.checkpoint_path=artifacts/runs/your_run/best.pt
 ```
 
-For a shorter diagnostic pass, append `--fast` to the evaluation command. Detailed storage, resume, and acquisition behavior is documented in [docs/PROJECT.md](docs/PROJECT.md).
+For a shorter diagnostic pass, append `--fast` to the evaluation command. Dataset locations, cache paths, retry limits, and evaluation outputs are centralised in `configs/default.yaml`.
+
+### External baseline reproduction
+
+Download the pinned and checksum-verified public baseline checkpoints:
+
+```bash
+uv run aigc-download-baselines \
+  --config configs/default.yaml
+```
+
+After preparing the official demonstration set, evaluate a selected detector on the same manifest-backed pipeline:
+
+```bash
+uv run aigc-evaluate-baselines \
+  --config configs/default.yaml \
+  --dataset wildfake_official \
+  --baseline cnndetection
+```
+
+Replace `cnndetection` with `univfd` to reproduce the other published baseline comparison. Add `--fast` for the deterministic diagnostic subset where supported.
+
+### Ablation reproduction
+
+The four trainable leave-one-component-out variants reuse the release feature and residual caches:
+
+```bash
+uv run aigc-train \
+  --config configs/default.yaml \
+  --set project.run_name=ablation_without_residual \
+  --set model.residual_statistics_enabled=false \
+  --set feature_cache.use_for_training=true
+
+uv run aigc-train \
+  --config configs/default.yaml \
+  --set project.run_name=ablation_without_multilayer \
+  --set model.multilayer_fusion_enabled=false \
+  --set feature_cache.use_for_training=true
+
+uv run aigc-train \
+  --config configs/default.yaml \
+  --set project.run_name=ablation_without_consistency \
+  --set loss.consistency_weight=0.0 \
+  --set feature_cache.use_for_training=true
+
+uv run aigc-train \
+  --config configs/default.yaml \
+  --set project.run_name=ablation_without_contrastive \
+  --set loss.contrastive_weight=0.0 \
+  --set feature_cache.use_for_training=true
+```
+
+Fit each run's calibration on its internal validation data, then evaluate it into an isolated result directory. Set `component` to `residual`, `multilayer`, `consistency`, or `contrastive`:
+
+```bash
+component=residual
+uv run aigc-calibrate \
+  --config artifacts/runs/ablation_without_${component}/resolved_config.yaml \
+  --checkpoint artifacts/runs/ablation_without_${component}/best.pt
+
+uv run aigc-evaluate-official \
+  --config artifacts/runs/ablation_without_${component}/resolved_config.yaml \
+  --checkpoint artifacts/runs/ablation_without_${component}/best.pt \
+  --set official_evaluation.results_path=artifacts/ablations/without_${component}/results.json \
+  --set evaluation.save_predictions=false
+```
+
+The calibration ablation reuses the unchanged full checkpoint. The paths below correspond to a run produced by the default `project.run_name: robustfake`:
+
+```bash
+uv run aigc-evaluate-official \
+  --config artifacts/runs/robustfake/resolved_config.yaml \
+  --checkpoint artifacts/runs/robustfake/best.pt \
+  --set evaluation.calibration_enabled=false \
+  --set official_evaluation.results_path=artifacts/ablations/without_calibration/results.json \
+  --set evaluation.save_predictions=false
+```
+
+Generate the summary tables plus presentation-ready SVG and PNG figures after the complete evaluations finish:
+
+```bash
+uv run robustfake-ablation-report \
+  --result Full=artifacts/evaluations/wildfake_official/results.json \
+  --result NoResidual=artifacts/ablations/without_residual/results.json \
+  --result NoMultilayer=artifacts/ablations/without_multilayer/results.json \
+  --result NoConsistency=artifacts/ablations/without_consistency/results.json \
+  --result NoContrastive=artifacts/ablations/without_contrastive/results.json \
+  --result NoCalibration=artifacts/ablations/without_calibration/results.json \
+  --output-dir artifacts/ablations/report
+```
 
 ## Robustness Evaluation Summary
 
