@@ -75,40 +75,6 @@ The residual-statistics branch, enabled by default, computes 24 fixed high-pass 
 
 ![RobustFake Architecture](assets/RobostFakeArchitecture.png)
 
-```mermaid
-flowchart TD
-    A[Original encoded image] --> B[EXIF orientation, RGB conversion, label-independent standardization]
-    B --> C[Shared crop geometry]
-    C --> D1[Clean global view]
-    C --> D2[Clean local view]
-    B --> E[Redistribution degradation]
-    E --> F1[Degraded global view using shared geometry]
-    E --> F2[Degraded local view using shared geometry]
-
-    D1 --> G[Frozen CLIP ViT-B/16]
-    D2 --> G
-    F1 --> G
-    F2 --> G
-
-    G --> H1[Final projected embedding]
-    G --> H2[CLS tokens from blocks 4, 7, 10, and 12]
-    H2 --> I[Trainable 512-d projections]
-    H1 --> J[Sample-dependent softmax layer gate]
-    I --> J
-    J --> K[View mean and standard deviation]
-
-    D1 --> R[Fixed residual statistics]
-    D2 --> R
-    F1 --> R
-    F2 --> R
-    R --> S[Residual mean and standard deviation plus MLP]
-
-    K --> L[Feature concatenation]
-    S --> L
-    L --> M[LayerNorm, Linear, GELU, Dropout]
-    M --> N[Binary AIGC logit]
-    M --> P[Training-only projection head]
-```
 
 At inference time, only one clean global/local pair is required. The clean/degraded branches shown above are paired training views.
 
